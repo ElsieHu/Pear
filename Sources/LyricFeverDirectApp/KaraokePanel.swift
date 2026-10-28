@@ -63,16 +63,17 @@ final class KaraokePanel: NSPanel {
         observeResizes()
         // The window no longer sizes itself, so set the real size up front —
         // otherwise the pill appears at its 420×56 placeholder for a frame.
-        refit(animated: false)
+        refit()
         startFittingLoop()
     }
 
     // MARK: - Re-centring on auto-resize
 
-    private var lastKnownWidth: CGFloat = 0
+    /// Set while `refit` applies its own frame, so the diagnostic below can
+    /// tell our resize apart from one imposed from elsewhere.
+    private var isProgrammaticResize = false
 
     private func observeResizes() {
-        lastKnownWidth = frame.width
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(panelDidResize(_:)),
@@ -81,23 +82,14 @@ final class KaraokePanel: NSPanel {
         )
     }
 
-    /// Diagnostic only.
-    ///
-    /// With the container in place the window should never resize itself —
-    /// every size change is supposed to come from `refit`, animated. If this
-    /// logs, the container has stopped insulating us and resizes are again
-    /// cutting the animation short.
+    /// Diagnostic: the window's size must come from `refit` and nowhere else.
+    /// A resize imposed from outside leaves the pill out of step with its own
+    /// content, which is what clips the rounded corners — so report it.
     @objc private func panelDidResize(_ note: Notification) {
-        let width = frame.width
-        let delta = width - lastKnownWidth
-        guard abs(delta) > 0.5 else {
-            lastKnownWidth = width
-            return
-        }
-        lastKnownWidth = width
+        guard !isProgrammaticResize else { return }
         if Date().timeIntervalSince(lastResizeLog) > 15.0 {
             lastResizeLog = Date()
-            AppLog.info(String(format: "窗口尺寸变化 w=%+.0f (正常应由 refit 动画驱动)", delta))
+            AppLog.warn(String(format: "窗口被外部改尺寸 w=%.0f (应由 refit 独占)", frame.width))
         }
     }
 
@@ -115,7 +107,7 @@ final class KaraokePanel: NSPanel {
             .sink { [weak self] _ in
                 Task { @MainActor in
                     self?.applyAppearance()
-                    self?.refit(animated: true)
+                    self?.refit()
                 }
             }
     }
@@ -143,7 +135,7 @@ final class KaraokePanel: NSPanel {
         stateCancellable = state.objectWillChange.sink { [weak self] _ in
             // `objectWillChange` fires *before* the new value lands; hop once
             // so `fittingSize` reflects the change we were told about.
-            Task { @MainActor in self?.refit(animated: true) }
+            Task { @MainActor in self?.refit() }
         }
     }
 
@@ -153,30 +145,29 @@ final class KaraokePanel: NSPanel {
             // Settle the size *before* the first appearance: showing the
             // placeholder width first and animating to the real one looks
             // like the pill inflating on launch.
-            refit(animated: false)
+            refit()
             orderFrontRegardless()
         } else if !shouldShow && isVisible {
             orderOut(nil)
             return
         }
 
-        refit(animated: true)
+        refit()
     }
 
     /// Rate-limited note of how the pill is resizing, for the log.
     private var lastFitLog = Date.distantPast
     private var lastResizeLog = Date.distantPast
-    /// Timestamp until which a resize animation is still in flight.
-    private var animatingUntil = Date.distantPast
-    /// Kept in step with the line-swap animation in `KaraokeView` so the pill
-    /// and its text settle at the same moment.
-    private static let resizeDuration: TimeInterval = 0.26
 
-    private func refit(animated: Bool) {
+    /// Sizes the window to its content, in one step.
+    ///
+    /// Deliberately not animated. The pill is only ever resized while it is
+    /// fully transparent (see `AppState.advanceLineIfNeeded`), so an animated
+    /// frame would be invisible for its whole duration while leaving the
+    /// window behind its content — which is exactly what clipped the rounded
+    /// corners into square ones.
+    private func refit() {
         guard let hosting, state.panelContent != .hidden else { return }
-        // Don't interrupt an in-flight resize: restarting from a halfway
-        // frame makes the pill stutter instead of glide.
-        if animated, Date() < animatingUntil { return }
 
         let target = hosting.fittingSize
         guard target.width >= 24, target.height >= 16, target.width.isFinite else { return }
@@ -215,17 +206,9 @@ final class KaraokePanel: NSPanel {
                                state.appearance.textAlignmentRaw))
         }
 
-        if animated {
-            animatingUntil = Date().addingTimeInterval(Self.resizeDuration)
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = Self.resizeDuration
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                animator().setFrame(rect, display: true)
-            }
-        } else {
-            setFrame(rect, display: true)
-        }
-        lastKnownWidth = target.width
+        isProgrammaticResize = true
+        setFrame(rect, display: true)
+        isProgrammaticResize = false
     }
 
     private func clamped(to rect: NSRect) -> NSRect {

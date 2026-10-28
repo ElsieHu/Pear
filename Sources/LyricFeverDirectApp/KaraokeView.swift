@@ -22,6 +22,11 @@ struct KaraokeView: View {
             .shadow(color: ap.shadowEnabled ? Color.black.opacity(0.28) : .clear,
                     radius: 18, x: 0, y: 8)
             .fixedSize(horizontal: true, vertical: true)
+            // The swap itself: dip the whole pill out and back in. The width
+            // changes while it is invisible, which is why no square edge is
+            // ever on screen (see `advanceLineIfNeeded`).
+            .opacity(state.contentOpacity)
+            .scaleEffect(0.97 + 0.03 * state.contentOpacity)
             .onHover { over in
                 withAnimation(.easeInOut(duration: 0.18)) { hovering = over }
             }
@@ -61,7 +66,9 @@ struct KaraokeView: View {
         if let lyrics = state.lyrics, !lyrics.lines.isEmpty {
             TimelineView(.periodic(from: .now, by: refreshInterval)) { _ in
                 let pos = state.monitor.smoothPosition
-                let idx = lyrics.activeLineIndex(at: pos) ?? 0
+                // Not the live index: `AppState` lags this by one breath so
+                // the pill is invisible at the moment it changes width.
+                let idx = min(state.displayedLineIndex, lyrics.lines.count - 1)
                 let line = lyrics.lines[idx]
                 let progress = ap.sweepEnabled ? lyrics.lineProgress(line, at: pos) : 1
 
@@ -71,13 +78,6 @@ struct KaraokeView: View {
                         progress: progress,
                         appearance: ap
                     )
-                    // `.id` gives each line an identity tied to its index, so
-                    // advancing swaps one view for another — and *that* is
-                    // what makes the transition below run. Without it the Text
-                    // simply replaced its contents mid-frame, which read as a
-                    // hard cut.
-                    .id(idx)
-                    .transition(Self.lineChangeTransition)
                     if ap.showNextLine, idx + 1 < lyrics.lines.count {
                         KaraokeLine(
                             text: lyrics.lines[idx + 1].text,
@@ -86,12 +86,9 @@ struct KaraokeView: View {
                             scale: ap.nextLineScale,
                             opacity: ap.dimOpacity
                         )
-                        .id(idx + 1)
-                        .transition(Self.lineChangeTransition)
                     }
                 }
                 .frame(maxWidth: ap.maxWidth, alignment: ap.frameAlignment)
-                .animation(Self.lineChangeAnimation, value: idx)
             }
         }
     }
@@ -107,16 +104,6 @@ struct KaraokeView: View {
         return ap.sweepEnabled ? 1.0 / 60.0 : 1.0 / 20.0
     }
 
-    /// Line-to-line hand-off: the finished line leaves upward, the next one
-    /// arrives from below — the direction lyrics actually travel.
-    static let lineChangeAnimation: Animation = .easeOut(duration: 0.26)
-
-    static var lineChangeTransition: AnyTransition {
-        .asymmetric(
-            insertion: .move(edge: .bottom).combined(with: .opacity),
-            removal: .move(edge: .top).combined(with: .opacity)
-        )
-    }
 }
 
 /// A single lyric line with an Apple-Music-style left-to-right highlight sweep.
