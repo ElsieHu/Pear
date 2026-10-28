@@ -1,0 +1,310 @@
+import Foundation
+import Combine
+import AppKit
+import LyricEngine
+import AppleMusicBridge
+
+/// What the floating window should render right now.
+enum PanelContent: Equatable {
+    case hidden
+    case idle(String)
+    case loading
+    case lyrics
+}
+
+/// Shared application state: owns the Apple Music monitor, the lyrics
+/// sources, and all persisted appearance settings.
+@MainActor
+final class AppState: ObservableObject {
+    static let shared = AppState()
+
+    let monitor = AppleMusicMonitor()
+    private let musicKitSource = AppleMusicLyricsSource()
+
+    @Published var lyrics: TimedLyrics?
+    @Published var isFetching = false
+    @Published var lastError: String?
+
+    /// Persisted appearance of the floating window.
+    @Published var appearance: LyricAppearance {
+        didSet { persistAppearance(); applyAutoColors() }
+    }
+
+    /// Colours derived from the current album artwork (nil when unused).
+    @Published var autoBackgroundHex: String?
+    @Published var autoTextHex: String?
+
+    /// The appearance actually rendered: manual colours, or the album's.
+    var effectiveAppearance: LyricAppearance {
+        appearance.effective(backgroundHex: autoBackgroundHex, textHex: autoTextHex)
+    }
+
+    private var currentArtwork: AppleMusicCacheLyricsSource.ArtworkInfo?
+    private var artworkCancellable: AnyCancellable?
+
+    /// User-controlled visibility (menu bar toggle).
+    @Published var windowEnabled = true
+
+    /// Opt-in: also try the official MusicKit web API (needs a Developer token).
+    @Published var useMusicKitAPI = false {
+        didSet { UserDefaults.standard.set(useMusicKitAPI, forKey: "useMusicKitAPI") }
+    }
+
+    private var lastTrackKey: String?
+
+    // MARK: - Retry state
+
+    /// Set when the last attempt failed with “not downloaded *yet*”, i.e. a
+    /// retry is meaningful. A definitive “Apple has no lyrics for this” stops
+    /// the loop so we don't burn CPU on a song that will never have any.
+    private var retryEligible = false
+    private var retryAttempt = 0
+    private var cacheWatcher: CacheDirectoryWatcher?
+    /// Incremented by the cache watcher; the loop wakes on it.
+    private var cacheDirty = false
+    private var fetchGeneration = 0
+
+    private init() {
+        let ud = UserDefaults.standard
+        if let data = ud.data(forKey: "appearance"),
+           let decoded = try? JSONDecoder().decode(LyricAppearance.self, from: data) {
+            self.appearance = decoded
+        } else {
+            self.appearance = LyricAppearance()
+        }
+        self.useMusicKitAPI = ud.bool(forKey: "useMusicKitAPI")
+    }
+
+    // MARK: - Lifecycle
+
+    func start() {
+        AppLog.info("=== LyricFeverDirect 启动 ===")
+
+        // Surface script failures (bad syntax, -10004 permission denial, …)
+        // in the log instead of silently reporting "no track".
+        MusicScript.diagnosticHandler = { message in
+            AppLog.warn("AppleScript: \(message)")
+        }
+        AppLog.info("MediaRemote 可用: \(MediaRemoteBridge.isAvailable)")
+
+        monitor.start()
+        // Artwork arrives asynchronously; re-derive colours once it lands.
+        artworkCancellable = ArtworkLoader.shared.$dominantHex
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.applyAutoColors() }
+            }
+
+        // Watch Apple Music's cache directory: the moment the Music app
+        // writes a song's TTML we retry, instead of waiting for a poll.
+        if let dir = AppleMusicCacheLyricsSource.cacheDirectory {
+            let watcher = CacheDirectoryWatcher(path: dir.path) { [weak self] in
+                Task { @MainActor in self?.cacheDirty = true }
+            }
+            watcher.start()
+            cacheWatcher = watcher
+        }
+
+        AppLog.info("start(): 正在下发监听循环")
+        Task {
+            AppLog.info("监听循环已启动")
+            await self.watchTrackChanges()
+        }
+    }
+
+    // MARK: - Album artwork & colour
+
+    /// Look up the current track's artwork and load it (for the menu panel).
+    private func resolveArtwork() {
+        guard let track = monitor.track else {
+            currentArtwork = nil
+            ArtworkLoader.shared.load(url: nil)
+            applyAutoColors()
+            return
+        }
+        let info = AppleMusicCacheLyricsSource.artworkInfo(for: track)
+        currentArtwork = info
+        ArtworkLoader.shared.load(url: info?.url(size: 300))
+        applyAutoColors()
+    }
+
+    /// Turn the artwork's palette into the colours the pill should use.
+    private func applyAutoColors() {
+        guard let info = currentArtwork, appearance.colorModeRaw != "manual" else {
+            autoBackgroundHex = nil
+            autoTextHex = nil
+            return
+        }
+        switch appearance.colorModeRaw {
+        case "artwork":
+            autoBackgroundHex = ArtworkLoader.shared.dominantHex ?? info.bgColorHex
+            autoTextHex = nil
+        default: // "album" — Apple's own bgColor / textColor1 pairing
+            autoBackgroundHex = info.bgColorHex
+            autoTextHex = info.textColorHex
+        }
+    }
+
+    /// Detect track changes and (re)fetch lyrics from Apple Music.
+    ///
+    /// The Music app writes a song's TTML to disk *asynchronously* — often a
+    /// second or two after playback starts. So a single fetch at track-change
+    /// time is not enough; we retry until it lands, but back off so a song
+    /// that genuinely has no lyrics doesn't keep the CPU busy all day.
+    private var nextRetryDate = Date.distantPast
+
+    /// Fibonacci-ish backoff, capped. Plus the cache watcher short-circuits
+    /// all of this the instant the file actually appears.
+    private static let backoff: [TimeInterval] = [0.6, 1.2, 2, 3, 5, 8, 13, 20]
+
+    private var didInitialFetch = false
+    private var lastNoTrackLog = Date.distantPast
+
+    private func watchTrackChanges() async {
+        while !Task.isCancelled {
+            let key = monitor.trackIdentity
+
+            // nil == nil on the very first pass, so without this the initial
+            // fetch (and its log line) would be skipped entirely.
+            let isChange = key != lastTrackKey || !didInitialFetch
+
+            if isChange {
+                didInitialFetch = true
+                lastTrackKey = key
+                retryAttempt = 0
+                retryEligible = true
+                cacheDirty = false
+                nextRetryDate = .distantPast
+                if let t = monitor.track {
+                    let via = t.persistentID.hasPrefix("mr|") ? "MediaRemote(未获自动化授权)" : "AppleScript"
+                    AppLog.info("曲目切换 → 《\(t.title)》- \(t.artist) [\(String(format: "%.1f", t.duration))s] 来源=\(via)")
+                } else {
+                    AppLog.warn("拿不到当前曲目 → 见上一条 AppleScript 具体报错 (若为 -10004 则是自动化未授权, 请在本应用重新打开后到「系统设置 ▸ 隐私与安全性 ▸ 自动化」允许控制“音乐”)")
+                }
+                resolveArtwork()
+                await fetchCurrent()
+            } else if monitor.track == nil, Date().timeIntervalSince(lastNoTrackLog) > 10 {
+                lastNoTrackLog = Date()
+                AppLog.warn("仍无曲目 (具体原因见上面的 AppleScript 报错行)")
+            } else if lyrics == nil, monitor.track != nil, retryEligible {
+                let due = cacheDirty || Date() >= nextRetryDate
+                if due {
+                    cacheDirty = false
+                    retryAttempt += 1
+                    await fetchCurrent()
+                }
+            }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+    }
+
+    func fetchCurrent() async {
+        guard let track = monitor.track else {
+            lyrics = nil
+            lastError = nil
+            return
+        }
+        isFetching = true
+        defer { isFetching = false }
+
+        // Primary source: Apple Music's own on-disk lyrics cache.
+        do {
+            let cached = try AppleMusicCacheLyricsSource.lyrics(for: track)
+            lyrics = cached
+            lastError = nil
+            retryEligible = false
+            retryAttempt = 0
+            AppLog.info("拿到歌词 《\(track.title)》 \(cached.lines.count) 行, 逐字=\(cached.hasWordTiming)")
+            return
+        } catch let error as AppleMusicCacheLyricsSource.CacheError {
+            switch error {
+            case .noTimeSyncedLyrics:
+                // Definitive: Apple's catalogue has no synced lyrics for this
+                // song. Stop retrying — it will never arrive.
+                retryEligible = false
+                lastError = error.errorDescription
+                AppLog.info("《\(track.title)》Apple Music 目录内无同步歌词, 停止重试")
+                return
+            case .noLyrics, .cacheUnavailable:
+                break
+            }
+        } catch {
+            AppLog.warn("缓存解析失败: \(error.localizedDescription)")
+        }
+
+        // Optional secondary: the official MusicKit web API. Needs a paid
+        // Developer Program token, so it is off by default.
+        if useMusicKitAPI {
+            do {
+                lyrics = try await musicKitSource.fetchLyrics(for: track)
+                lastError = nil
+                retryEligible = false
+                AppLog.info("MusicKit API 拿到歌词")
+                return
+            } catch {
+                lastError = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                AppLog.warn("MusicKit API 失败: \(lastError ?? "")")
+                return
+            }
+        }
+
+        // Requirement #1: never fall back to Spotify / LRCLIB / NetEase / QQ.
+        lyrics = nil
+        lastError = AppleMusicCacheLyricsSource.CacheError.noLyrics.errorDescription
+        retryEligible = true
+        let idx = min(retryAttempt, Self.backoff.count - 1)
+        nextRetryDate = Date().addingTimeInterval(Self.backoff[idx])
+        if retryAttempt <= 1 || retryAttempt % 4 == 0 {
+            let d = AppleMusicCacheLyricsSource.diagnose(for: track)
+            AppLog.info("未命中 (第 \(retryAttempt) 次) 缓存曲目数=\(d.cacheEntryCount) 最高分=\(d.bestScore) 候选=\(d.bestTitle ?? "无") 找到歌曲记录=\(d.foundSongRecord) 目录标记有词=\(String(describing: d.catalogueHasSyncedLyrics))")
+        }
+    }
+
+    /// Manual retry (e.g. after the user grants Automation access).
+    func retry() {
+        lastTrackKey = nil
+        retryAttempt = 0
+        retryEligible = true
+        nextRetryDate = .distantPast
+        resolveArtwork()
+        Task { await fetchCurrent() }
+    }
+
+    // MARK: - Panel content
+
+    var panelContent: PanelContent {
+        guard windowEnabled else { return .hidden }
+        if lyrics != nil { return .lyrics }
+        if isFetching { return .loading }
+        if let err = lastError {
+            return .idle(err)
+        }
+        guard monitor.track != nil else {
+            return .idle("需要允许控制“音乐”：系统设置 ▸ 隐私与安全性 ▸ 自动化")
+        }
+        if let err = lastError { return .idle(err) }
+        return .idle("正在等待 Apple Music 写入歌词…")
+    }
+
+    // MARK: - Persistence
+
+    private func persistAppearance() {
+        let snapshot = appearance
+        Task { @MainActor in
+            // Coalesce rapid slider drags into a single write.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            UserDefaults.standard.set(data, forKey: "appearance")
+            // Let the panel re-fit to the new text metrics.
+            NotificationCenter.default.post(name: .appearanceDidChange, object: nil)
+        }
+    }
+
+    func resetAppearance() {
+        appearance = LyricAppearance()
+    }
+
+    func applyPreset(_ preset: LyricAppearance) {
+        appearance = preset
+    }
+}
+

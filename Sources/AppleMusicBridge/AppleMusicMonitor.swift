@@ -1,0 +1,311 @@
+import Foundation
+import Combine
+
+/// The currently playing track, as reported by the Music app.
+public struct CurrentTrack: Sendable, Equatable {
+    public let title: String
+    public let artist: String
+    public let album: String
+    public let duration: TimeInterval
+    /// Music app persistent ID (library scoped). Used for change detection.
+    public let persistentID: String
+
+    public init(title: String, artist: String, album: String, duration: TimeInterval, persistentID: String) {
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.duration = duration
+        self.persistentID = persistentID
+    }
+}
+
+/// One poll's worth of state read out of the Music app.
+public struct MusicSnapshot: Sendable {
+    public let state: String
+    public let position: TimeInterval
+    public let title: String
+    public let artist: String
+    public let album: String
+    public let duration: TimeInterval
+    public let persistentID: String
+}
+
+/// Talks to the Music app. Deliberately **not** an actor and **not**
+/// @MainActor: it owns blocking `osascript` invocations and is meant to be
+/// driven from a background queue.
+///
+/// (An earlier version called these as `@MainActor` methods; Swift 6's
+/// isolation check then trapped with EXC_BREAKPOINT as soon as the timer
+/// fired off the main thread.)
+public enum MusicScript {
+
+    /// Set by the app so script failures show up in the log file instead of
+    /// silently returning nil (which used to look like "no permission").
+    /// Polling runs once a second, so identical messages are collapsed —
+    /// otherwise a single persistent failure floods the log.
+    public nonisolated(unsafe) static var diagnosticHandler: ((String) -> Void)?
+    nonisolated(unsafe) private static var lastDiagnostic = ""
+
+    /// One round-trip for state + position + track metadata.
+    ///
+    /// Variable names matter: `st` collides with a term in the Music app's
+    /// AppleScript dictionary and makes the *entire* script fail to compile
+    /// (error -2741, "预期是表达式，却找到 st"). Compile failure means
+    /// `osascript` exits non-zero, we return nil, and the app looks exactly
+    /// like it has no Automation permission even after the user grants it.
+    /// Every name below has been checked against the dictionary.
+    static let combined = """
+    tell application "Music"
+        set pstate to (player state as text)
+        set pp to "0"
+        try
+            set pp to (player position as text)
+        end try
+        set nm to ""
+        set ar to ""
+        set al to ""
+        set du to "0"
+        set pid to ""
+        try
+            set t to current track
+            set nm to (name of t)
+            set ar to (artist of t)
+            set al to (album of t)
+            set du to (duration of t as text)
+            set pid to (persistent ID of t)
+        end try
+        return pstate & "||" & pp & "||" & nm & "||" & ar & "||" & al & "||" & du & "||" & pid
+    end tell
+    """
+
+    static func read() -> MusicSnapshot? {
+        guard let raw = run(combined), !raw.isEmpty else { return nil }
+        let parts = raw.components(separatedBy: "||")
+        guard parts.count >= 7 else { return nil }
+        return MusicSnapshot(state: parts[0],
+                             position: Double(parts[1]) ?? 0,
+                             title: parts[2],
+                             artist: parts[3],
+                             album: parts[4],
+                             duration: Double(parts[5]) ?? 0,
+                             persistentID: parts[6])
+    }
+
+    /// AppleScript (authoritative, needs Automation permission) merged with
+    /// MediaRemote (no permission, but coarser). Whoever has the data wins.
+    static func mergedSnapshot() -> MusicSnapshot? {
+        let script = read()
+        let remote = MediaRemoteBridge.snapshot()
+
+        guard let a = script else { return remote }
+        guard let r = remote else { return a }
+
+        // AppleScript carries the real library ID and a live position, so
+        // prefer it wherever it actually has something to say.
+        let title = a.title.isEmpty ? r.title : a.title
+        let artist = a.artist.isEmpty ? r.artist : a.artist
+        let album = a.album.isEmpty ? r.album : a.album
+        let duration = a.duration > 0 ? a.duration : r.duration
+        let persistentID = a.persistentID.isEmpty ? r.persistentID : a.persistentID
+        // Only fall back to MediaRemote's elapsed time when AppleScript gave
+        // us no track at all (i.e. permission is missing) — otherwise the
+        // live AppleScript position is always more accurate.
+        let position = a.title.isEmpty ? r.position : a.position
+        let state = a.state.isEmpty ? r.state : a.state
+
+        return MusicSnapshot(state: state,
+                             position: position,
+                             title: title,
+                             artist: artist,
+                             album: album,
+                             duration: duration,
+                             persistentID: persistentID)
+    }
+
+    @discardableResult
+    static func run(_ source: String) -> String? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", source]
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = errPipe
+        do {
+            try proc.run()
+        } catch {
+            report("osascript 启动失败: \(error.localizedDescription)")
+            return nil
+        }
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+
+        guard proc.terminationStatus == 0 else {
+            let msg = String(data: errData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "(无 stderr)"
+            report("osascript 退出 \(proc.terminationStatus): \(msg)")
+            return nil
+        }
+        return String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Collapse repeated identical diagnostics into a single log line.
+    private static func report(_ message: String) {
+        guard message != lastDiagnostic else { return }
+        lastDiagnostic = message
+        diagnosticHandler?(message)
+    }
+}
+
+/// Watches the macOS Music app for the currently playing track and keeps a
+/// smoothly interpolated playback position.
+///
+/// Design notes (this file was rewritten after two real bugs)
+/// ----------------------------------------------------------
+/// 1. An earlier version asked the Music app twice (`player state`,
+///    `player position`) every 0.25 s, each time spawning a synchronous
+///    `osascript` — 8 process launches per second, all blocking the main
+///    thread. It starved the main actor badly enough that the lyrics-fetch
+///    loop never got scheduled: every new song needed a manual refresh.
+/// 2. Moving that work onto a queue exposed a Swift 6 isolation trap
+///    (EXC_BREAKPOINT via `_swift_task_checkIsolatedSwift`), because the
+///    script helpers were still @MainActor methods. All scripting now lives
+///    in `MusicScript`, which carries no isolation at all.
+///
+/// So: one combined AppleScript per poll at ~1 Hz, on a dedicated serial
+/// queue, and only *changed* values are published.
+@MainActor
+public final class AppleMusicMonitor: ObservableObject {
+    @Published public private(set) var track: CurrentTrack?
+    @Published public private(set) var isPlaying = false
+
+    /// Identity key that changes whenever a *different* song starts.
+    public var trackIdentity: String? {
+        track.map { "\($0.persistentID)|\($0.title)|\($0.artist)" }
+    }
+
+    // Local interpolation anchors.
+    private var anchorPosition: TimeInterval = 0
+    private var anchorDate: Date = .distantPast
+
+    /// Non-isolated poller: owns the queue + timer, never touches the actor.
+    private var poller: MusicPoller?
+    private var pollInterval: TimeInterval = 1.0
+
+    public init() {}
+
+    public func start() {
+        // Typed @Sendable at the parameter, so this closure does *not*
+        // inherit main-actor isolation; the hop back is explicit.
+        poller = MusicPoller { [weak self] snapshot in
+            Task { @MainActor in self?.apply(snapshot) }
+        }
+
+        let center = DistributedNotificationCenter.default()
+        center.addObserver(self,
+                           selector: #selector(playerInfoChanged(_:)),
+                           name: Notification.Name("com.apple.Music.playerInfo"),
+                           object: nil)
+        center.addObserver(self,
+                           selector: #selector(playerInfoChanged(_:)),
+                           name: Notification.Name("com.apple.iTunes.playerInfo"),
+                           object: nil)
+
+        poller?.setInterval(pollInterval)
+        poller?.start()
+        poller?.pollOnce()
+    }
+
+    public func stop() {
+        poller?.stop()
+        poller = nil
+        DistributedNotificationCenter.default().removeObserver(self)
+    }
+
+    // MARK: - Public position access
+
+    /// Smoothly interpolated playback position in seconds.
+    public var smoothPosition: TimeInterval {
+        if isPlaying {
+            return anchorPosition + Date().timeIntervalSince(anchorDate)
+        }
+        return anchorPosition
+    }
+
+    // MARK: - Polling
+
+    private func apply(_ s: MusicSnapshot) {
+        let playing = (s.state == "playing")
+
+        if s.persistentID.isEmpty || s.title.isEmpty {
+            setTrack(nil)
+        } else {
+            setTrack(CurrentTrack(title: s.title,
+                                  artist: s.artist,
+                                  album: s.album,
+                                  duration: s.duration,
+                                  persistentID: s.persistentID))
+        }
+        setPlaying(playing)
+
+        // Anchors are plain state (not @Published): updating them must not
+        // trigger a redraw, otherwise every observing view re-renders 1×/s.
+        anchorPosition = s.position
+        anchorDate = Date()
+
+        let wanted = playing ? 1.0 : 3.0
+        if abs(wanted - pollInterval) > 0.01 {
+            pollInterval = wanted
+            poller?.setInterval(wanted)
+        }
+    }
+
+    /// `@Published` fires on *every* assignment, even when the value is
+    /// unchanged. Only assign on real changes.
+    private func setPlaying(_ newValue: Bool) {
+        guard isPlaying != newValue else { return }
+        isPlaying = newValue
+    }
+
+    private func setTrack(_ newValue: CurrentTrack?) {
+        guard track != newValue else { return }
+        track = newValue
+    }
+
+    // MARK: - Playback control
+
+    public func togglePlayPause() {
+        poller?.run("tell application \"Music\" to playpause")
+        poller?.pollOnce()
+    }
+
+    public func nextTrack() {
+        poller?.run("tell application \"Music\" to next track")
+        poller?.pollOnce()
+    }
+
+    public func previousTrack() {
+        poller?.run("tell application \"Music\" to previous track")
+        poller?.pollOnce()
+    }
+
+    public func seek(to seconds: TimeInterval) {
+        let clamped = max(0, seconds)
+        poller?.run("tell application \"Music\" to set player position to \(clamped)")
+        anchorPosition = clamped
+        anchorDate = Date()
+    }
+
+    // MARK: - Notifications
+
+    @objc private func playerInfoChanged(_ note: Notification) {
+        refreshNowPlaying()
+    }
+
+    /// Re-read track metadata + playback state from the Music app.
+    public func refreshNowPlaying() {
+        poller?.pollOnce()
+    }
+}
