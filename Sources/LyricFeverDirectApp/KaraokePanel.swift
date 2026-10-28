@@ -15,8 +15,27 @@ final class KaraokePanel: NSPanel {
 
     private let state: AppState
     private var hosting: NSView?
+    private var pill: NSView?
+    /// The rounded, clipping inner view — separate from `pill` because a
+    /// layer that masks to its bounds also clips away its own shadow.
+    private var chrome: NSView?
     private var cancellable: AnyCancellable?
     private var stateCancellable: AnyCancellable?
+
+    /// How much room the window keeps around the pill for its shadow. Only
+    /// needed when there is a shadow: with it off, an inset would just be a
+    /// ring of invisible window swallowing clicks that belong to whatever is
+    /// underneath.
+    private static let shadowInset: CGFloat = 24
+
+    private var shadowRoom: CGFloat {
+        state.effectiveAppearance.shadowEnabled ? Self.shadowInset : 0
+    }
+
+    private var pillLeading: NSLayoutConstraint?
+    private var pillTrailing: NSLayoutConstraint?
+    private var pillTop: NSLayoutConstraint?
+    private var pillBottom: NSLayoutConstraint?
 
     init(state: AppState) {
         self.state = state
@@ -50,12 +69,51 @@ final class KaraokePanel: NSPanel {
         // left to animate. A plain container has no intrinsic size, which
         // hands size control back to `refit`.
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 56))
+        // The pill proper: background, rounded corners and shadow. It is
+        // inset inside the window because a shadow drawn outside the content
+        // view is simply clipped away by the window edge — so the window has
+        // to be a little bigger than the pill for the shadow to exist.
+        //
+        // The pill's shape is drawn here rather than in SwiftUI on purpose:
+        // whatever the content does, it is the window that clips, so a shape
+        // drawn *inside* the content gets squared off the moment content and
+        // window disagree about size. Drawn here as the clip, it holds.
+        // Two layers, not one: a layer that masks to its rounded bounds also
+        // clips away its own shadow. So the outer one casts the shadow and
+        // the inner one does the rounding and clipping.
+        let pill = NSView(frame: container.bounds)
+        pill.wantsLayer = true
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(pill)
+        self.pill = pill
+
+        let chrome = NSView(frame: pill.bounds)
+        chrome.wantsLayer = true
+        chrome.layer?.masksToBounds = true
+        chrome.autoresizingMask = [.width, .height]
+        pill.addSubview(chrome)
+        self.chrome = chrome
+
         let hosting = NSHostingView(rootView: KaraokeView().environmentObject(state))
-        hosting.frame = container.bounds
+        hosting.frame = chrome.bounds
         hosting.autoresizingMask = [.width, .height]
-        container.addSubview(hosting)
+        chrome.addSubview(hosting)
         contentView = container
         self.hosting = hosting
+
+        let leading = pill.leadingAnchor.constraint(equalTo: container.leadingAnchor,
+                                                    constant: shadowRoom)
+        let trailing = pill.trailingAnchor.constraint(equalTo: container.trailingAnchor,
+                                                      constant: -shadowRoom)
+        let top = pill.topAnchor.constraint(equalTo: container.topAnchor,
+                                            constant: shadowRoom)
+        let bottom = pill.bottomAnchor.constraint(equalTo: container.bottomAnchor,
+                                                  constant: -shadowRoom)
+        pillLeading = leading
+        pillTrailing = trailing
+        pillTop = top
+        pillBottom = bottom
+        NSLayoutConstraint.activate([leading, trailing, top, bottom])
 
         applyAppearance()
         restoreFrame()
@@ -63,15 +121,19 @@ final class KaraokePanel: NSPanel {
         observeResizes()
         // The window no longer sizes itself, so set the real size up front —
         // otherwise the pill appears at its 420×56 placeholder for a frame.
-        refit()
+        refit(animated: false)
         startFittingLoop()
     }
 
     // MARK: - Re-centring on auto-resize
 
-    /// Set while `refit` applies its own frame, so the diagnostic below can
-    /// tell our resize apart from one imposed from elsewhere.
-    private var isProgrammaticResize = false
+    /// The width `refit` last asked for.
+    ///
+    /// `didResize` is delivered asynchronously, so neither a flag set around
+    /// the `setFrame` call nor a time window reliably tells our own resize
+    /// apart from a foreign one. Comparing against what we actually asked for
+    /// does.
+    private var lastRefitWidth: CGFloat = 0
 
     private func observeResizes() {
         NotificationCenter.default.addObserver(
@@ -86,7 +148,10 @@ final class KaraokePanel: NSPanel {
     /// A resize imposed from outside leaves the pill out of step with its own
     /// content, which is what clips the rounded corners — so report it.
     @objc private func panelDidResize(_ note: Notification) {
-        guard !isProgrammaticResize else { return }
+        // Mid-animation the width is legitimately still on its way to our
+        // target, so only look once it has settled — and then only complain
+        // if the window ended up somewhere we did not ask for.
+        guard Date() >= animatingUntil, abs(frame.width - lastRefitWidth) > 0.5 else { return }
         if Date().timeIntervalSince(lastResizeLog) > 15.0 {
             lastResizeLog = Date()
             AppLog.warn(String(format: "窗口被外部改尺寸 w=%.0f (应由 refit 独占)", frame.width))
@@ -99,7 +164,45 @@ final class KaraokePanel: NSPanel {
         let ap = state.appearance
         isMovableByWindowBackground = !ap.lockPosition
         ignoresMouseEvents = ap.clickThrough
+        applyChrome()
     }
+
+    /// Background, corners and shadow of the pill.
+    ///
+    /// These live on the window's own layer, not inside the SwiftUI content.
+    /// That is the whole point: a rounded rect drawn *by* the content gets
+    /// clipped square by the window the moment content and window disagree
+    /// about size — which they do during every line hand-off. Drawn here, the
+    /// rounded shape is the clip, so it holds no matter what the content does.
+    private func applyChrome() {
+        guard let pill, let pillLayer = pill.layer, let chromeLayer = chrome?.layer else { return }
+        let ap = state.effectiveAppearance
+        chromeLayer.cornerRadius = CGFloat(ap.cornerRadius)
+        chromeLayer.backgroundColor = NSColor(ap.backgroundColor).cgColor
+        chromeLayer.masksToBounds = true
+        // Set on the layer rather than via `NSView.shadow`, which does not
+        // reliably reach a layer-backed view.
+        pillLayer.shadowOpacity = ap.shadowEnabled ? 1 : 0
+        pillLayer.shadowColor = NSColor.black.withAlphaComponent(0.28).cgColor
+        pillLayer.shadowRadius = 18
+        // AppKit measures the offset upwards; SwiftUI's `y: 8` is downwards.
+        pillLayer.shadowOffset = CGSize(width: 0, height: -8)
+
+        // Grow or shrink the ring of empty window around the pill to match.
+        pillLeading?.constant = shadowRoom
+        pillTop?.constant = shadowRoom
+        pillTrailing?.constant = -shadowRoom
+        pillBottom?.constant = -shadowRoom
+
+        let msg = String(format: "外壳 圆角=%.0f 阴影=%@ 不透明度=%.2f 留白=%.0f",
+                         ap.cornerRadius, ap.shadowEnabled ? "开" : "关",
+                         pillLayer.shadowOpacity, shadowRoom)
+        guard msg != lastChromeLog else { return }
+        lastChromeLog = msg
+        AppLog.info(msg)
+    }
+
+    private var lastChromeLog = ""
 
     private func observeAppearanceChanges() {
         cancellable = NotificationCenter.default
@@ -145,7 +248,7 @@ final class KaraokePanel: NSPanel {
             // Settle the size *before* the first appearance: showing the
             // placeholder width first and animating to the real one looks
             // like the pill inflating on launch.
-            refit()
+            refit(animated: false)
             orderFrontRegardless()
         } else if !shouldShow && isVisible {
             orderOut(nil)
@@ -159,18 +262,29 @@ final class KaraokePanel: NSPanel {
     private var lastFitLog = Date.distantPast
     private var lastResizeLog = Date.distantPast
 
-    /// Sizes the window to its content, in one step.
-    ///
-    /// Deliberately not animated. The pill is only ever resized while it is
-    /// fully transparent (see `AppState.advanceLineIfNeeded`), so an animated
-    /// frame would be invisible for its whole duration while leaving the
-    /// window behind its content — which is exactly what clipped the rounded
-    /// corners into square ones.
-    private func refit() {
-        guard let hosting, state.panelContent != .hidden else { return }
+    /// Kept in step with the line hand-off in `KaraokeView`, so the pill and
+    /// its text settle at the same moment.
+    private static let resizeDuration: TimeInterval = KaraokeView.handOffDuration
+    /// Until when a resize we started is still running.
+    private var animatingUntil = Date.distantPast
 
-        let target = hosting.fittingSize
-        guard target.width >= 24, target.height >= 16, target.width.isFinite else { return }
+    /// Sizes the window to its content.
+    ///
+    /// Animated, and safe to be: the rounded corners are the window's own
+    /// (see `applyChrome`), so a window that lags half a frame behind its
+    /// content no longer produces a square edge — the content simply slides
+    /// under the rounded mask.
+    private func refit(animated: Bool = true) {
+        guard let hosting, state.panelContent != .hidden else { return }
+        // Don't interrupt a resize in flight: restarting from a halfway frame
+        // makes the pill stutter instead of glide.
+        if animated, Date() < animatingUntil { return }
+
+        let content = hosting.fittingSize
+        guard content.width >= 24, content.height >= 16, content.width.isFinite else { return }
+        // The window is the pill plus room for its shadow on every side.
+        let room = 2 * shadowRoom
+        let target = NSSize(width: content.width + room, height: content.height + room)
 
         let current = frame.size
         guard abs(current.width - target.width) > 0.5 || abs(current.height - target.height) > 0.5 else { return }
@@ -206,9 +320,17 @@ final class KaraokePanel: NSPanel {
                                state.appearance.textAlignmentRaw))
         }
 
-        isProgrammaticResize = true
-        setFrame(rect, display: true)
-        isProgrammaticResize = false
+        lastRefitWidth = target.width
+        if animated {
+            animatingUntil = Date().addingTimeInterval(Self.resizeDuration)
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = Self.resizeDuration
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                animator().setFrame(rect, display: true)
+            }
+        } else {
+            setFrame(rect, display: true)
+        }
     }
 
     private func clamped(to rect: NSRect) -> NSRect {

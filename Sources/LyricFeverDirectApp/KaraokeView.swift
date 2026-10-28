@@ -17,16 +17,13 @@ struct KaraokeView: View {
         content
             .padding(.horizontal, ap.horizontalPadding)
             .padding(.vertical, ap.verticalPadding)
-            .background(ap.backgroundColor)
-            .clipShape(RoundedRectangle(cornerRadius: ap.cornerRadius, style: .continuous))
-            .shadow(color: ap.shadowEnabled ? Color.black.opacity(0.28) : .clear,
-                    radius: 18, x: 0, y: 8)
+            // No background, corner radius or shadow here — they belong to the
+            // window itself now (see `KaraokePanel.applyChrome`). The pill's
+            // shape must be the *window's* rounded rect, because whatever the
+            // content does, it is the window edge that clips; a shape drawn
+            // inside the content gets squared off the moment content and
+            // window disagree about size.
             .fixedSize(horizontal: true, vertical: true)
-            // The swap itself: dip the whole pill out and back in. The width
-            // changes while it is invisible, which is why no square edge is
-            // ever on screen (see `advanceLineIfNeeded`).
-            .opacity(state.contentOpacity)
-            .scaleEffect(0.97 + 0.03 * state.contentOpacity)
             .onHover { over in
                 withAnimation(.easeInOut(duration: 0.18)) { hovering = over }
             }
@@ -66,18 +63,29 @@ struct KaraokeView: View {
         if let lyrics = state.lyrics, !lyrics.lines.isEmpty {
             TimelineView(.periodic(from: .now, by: refreshInterval)) { _ in
                 let pos = state.monitor.smoothPosition
-                // Not the live index: `AppState` lags this by one breath so
-                // the pill is invisible at the moment it changes width.
-                let idx = min(state.displayedLineIndex, lyrics.lines.count - 1)
+                let idx = lyrics.activeLineIndex(at: pos) ?? 0
                 let line = lyrics.lines[idx]
                 let progress = ap.sweepEnabled ? lyrics.lineProgress(line, at: pos) : 1
 
                 VStack(alignment: ap.horizontalAlignment, spacing: 6) {
-                    KaraokeLine(
-                        text: line.text.isEmpty ? "♪" : line.text,
-                        progress: progress,
-                        appearance: ap
-                    )
+                    // A ZStack, not the VStack this used to be. During the
+                    // hand-off the outgoing and incoming lines coexist, and in
+                    // a VStack they *stack* — the content would briefly be
+                    // twice as tall as the window that clips it. Overlapping
+                    // them keeps the height at exactly one line.
+                    ZStack(alignment: ap.frameAlignment) {
+                        KaraokeLine(
+                            text: line.text.isEmpty ? "♪" : line.text,
+                            progress: progress,
+                            appearance: ap
+                        )
+                        // `.id` ties identity to the line, so advancing swaps
+                        // one view for another — which is what makes the
+                        // transition below run. Without it the Text simply
+                        // replaces its contents mid-frame: a hard cut.
+                        .id(idx)
+                        .transition(Self.handOffTransition)
+                    }
                     if ap.showNextLine, idx + 1 < lyrics.lines.count {
                         KaraokeLine(
                             text: lyrics.lines[idx + 1].text,
@@ -86,9 +94,12 @@ struct KaraokeView: View {
                             scale: ap.nextLineScale,
                             opacity: ap.dimOpacity
                         )
+                        .id(idx + 1)
+                        .transition(Self.handOffTransition)
                     }
                 }
                 .frame(maxWidth: ap.maxWidth, alignment: ap.frameAlignment)
+                .animation(Self.handOffAnimation, value: idx)
             }
         }
     }
@@ -104,6 +115,27 @@ struct KaraokeView: View {
         return ap.sweepEnabled ? 1.0 / 60.0 : 1.0 / 20.0
     }
 
+    // MARK: - Hand-off
+
+    /// Line-to-line hand-off. `easeInOut` rather than `easeOut` so the
+    /// outgoing line leaves as gently as the new one arrives; `KaraokePanel`
+    /// resizes the window over the same duration so the two settle together.
+    /// Shared with `KaraokePanel.resizeDuration` so the window and the text
+    /// settle at the same moment.
+    static let handOffDuration: TimeInterval = 0.28
+
+    static var handOffAnimation: Animation { .easeInOut(duration: handOffDuration) }
+
+    /// A short drift, not a full line-height slide: the line fades as much as
+    /// it moves, so a large offset would read as throwing the text away.
+    private static let slideDistance: CGFloat = 10
+
+    static var handOffTransition: AnyTransition {
+        .asymmetric(
+            insertion: .opacity.combined(with: .offset(y: slideDistance)),
+            removal: .opacity.combined(with: .offset(y: -slideDistance))
+        )
+    }
 }
 
 /// A single lyric line with an Apple-Music-style left-to-right highlight sweep.

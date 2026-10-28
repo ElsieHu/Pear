@@ -22,34 +22,9 @@ final class AppState: ObservableObject {
     let monitor = AppleMusicMonitor()
     private let musicKitSource = AppleMusicLyricsSource()
 
-    @Published var lyrics: TimedLyrics? {
-        didSet { resetLineAdvance() }
-    }
+    @Published var lyrics: TimedLyrics?
     @Published var isFetching = false
     @Published var lastError: String?
-
-    // MARK: - Line advance (“breathing” hand-off)
-
-    /// The line the pill is *showing*. It deliberately lags the live index:
-    /// when the live line moves on, the pill fades out first, swaps here while
-    /// invisible, then fades back in. See `advanceLineIfNeeded`.
-    @Published private(set) var displayedLineIndex = 0
-
-    /// Master opacity of the pill, dipped to 0 across a line swap.
-    @Published var contentOpacity: Double = 1
-
-    /// Fade out / in durations. They sum to 0.26 s so the hand-off keeps the
-    /// rhythm it had when the swap was a slide.
-    private static let fadeOut: TimeInterval = 0.10
-    private static let fadeIn: TimeInterval = 0.16
-
-    private var targetLineIndex = 0
-    private var isSwapping = false
-    /// False until the pill has found the line that is actually playing.
-    /// That first placement is a jump, not a hand-off, and must not animate —
-    /// otherwise launching (or changing track) mid-song fades the pill out
-    /// and in for no reason.
-    private var hasPlacedLine = false
 
     /// Persisted appearance of the floating window.
     @Published var appearance: LyricAppearance {
@@ -152,7 +127,6 @@ final class AppState: ObservableObject {
             AppLog.info("监听循环已启动")
             await self.watchTrackChanges()
         }
-        startLineAdvanceLoop()
     }
 
     // MARK: - Album artwork & colour
@@ -328,73 +302,6 @@ final class AppState: ObservableObject {
         nextRetryDate = .distantPast
         resolveArtwork()
         Task { await fetchCurrent() }
-    }
-
-    // MARK: - Line advance
-
-    /// Watches playback position and moves `displayedLineIndex` on, one
-    /// “breath” at a time.
-    ///
-    /// Why the detour: the pill is sized to its own text, so a new line means
-    /// a new width. Resizing the window and swapping the text at the same
-    /// moment cannot stay in sync — the content is already at the new width
-    /// while the window is still animating towards it, and the part that
-    /// sticks out gets clipped square by the window edge. So instead of
-    /// syncing two moving targets, the swap happens while nothing is visible:
-    /// fade out, resize, fade in.
-    private func startLineAdvanceLoop() {
-        Task { [weak self] in
-            while !Task.isCancelled {
-                self?.advanceLineIfNeeded()
-                // 20 Hz: a line boundary only needs to be noticed within a
-                // few tens of ms; the per-character sweep is driven by the
-                // view's own timeline, not by this loop.
-                try? await Task.sleep(nanoseconds: 50_000_000)
-            }
-        }
-    }
-
-    private func advanceLineIfNeeded() {
-        guard let lyrics, !lyrics.lines.isEmpty, panelContent == .lyrics else { return }
-
-        let live = lyrics.activeLineIndex(at: monitor.smoothPosition) ?? 0
-        targetLineIndex = live
-        guard !isSwapping, live != displayedLineIndex else { return }
-
-        guard hasPlacedLine else {
-            hasPlacedLine = true
-            displayedLineIndex = live
-            return
-        }
-
-        isSwapping = true
-        withAnimation(.easeIn(duration: Self.fadeOut)) { contentOpacity = 0 }
-
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(Self.fadeOut * 1_000_000_000))
-            // A track change may have reset us while we were waiting.
-            guard self.isSwapping else { return }
-            let from = self.displayedLineIndex
-            self.displayedLineIndex = self.targetLineIndex
-            AppLog.info(String(format: "切句 %d→%d 淡出%.2fs 淡入%.2fs (宽度须在此后、淡入前重算)",
-                               from, self.displayedLineIndex, Self.fadeOut, Self.fadeIn))
-            // Let the panel re-measure before the pill becomes visible again,
-            // so the new width is already in place on the first faded-in frame.
-            try? await Task.sleep(nanoseconds: 36_000_000)
-            guard self.isSwapping else { return }
-            withAnimation(.easeOut(duration: Self.fadeIn)) { self.contentOpacity = 1 }
-            self.isSwapping = false
-        }
-    }
-
-    /// Called when the lyrics themselves change (new track, lyrics dropped):
-    /// cancel any swap in flight and show the first line outright.
-    private func resetLineAdvance() {
-        isSwapping = false
-        targetLineIndex = 0
-        displayedLineIndex = 0
-        hasPlacedLine = false
-        contentOpacity = 1
     }
 
     // MARK: - Panel content
