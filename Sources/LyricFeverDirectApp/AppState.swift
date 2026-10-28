@@ -51,6 +51,11 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(useMusicKitAPI, forKey: "useMusicKitAPI") }
     }
 
+    /// What the menu-bar item shows (icon / title / artist, any combination).
+    @Published var menuBarDisplay: MenuBarDisplay {
+        didSet { persistMenuBarDisplay() }
+    }
+
     private var lastTrackKey: String?
 
     // MARK: - Retry state
@@ -74,6 +79,12 @@ final class AppState: ObservableObject {
             self.appearance = LyricAppearance()
         }
         self.useMusicKitAPI = ud.bool(forKey: "useMusicKitAPI")
+        if let data = ud.data(forKey: "menuBarDisplay"),
+           let decoded = try? JSONDecoder().decode(MenuBarDisplay.self, from: data) {
+            self.menuBarDisplay = decoded
+        } else {
+            self.menuBarDisplay = .default
+        }
     }
 
     // MARK: - Lifecycle
@@ -309,6 +320,11 @@ final class AppState: ObservableObject {
     }
 
     // MARK: - Persistence
+
+    private func persistMenuBarDisplay() {
+        guard let data = try? JSONEncoder().encode(menuBarDisplay) else { return }
+        UserDefaults.standard.set(data, forKey: "menuBarDisplay")
+    }
 
     private func persistAppearance() {
         let snapshot = appearance

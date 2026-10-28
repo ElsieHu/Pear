@@ -148,6 +148,10 @@ cd LyricFeverDirect
 ./build.sh --no-install   # 只打包，产物留在 dist/
 ```
 
+每次构建会先跑一遍歌词匹配规则自检（`tools/verify_match.swift`，
+验证"同艺人的另一首歌不会被当成当前曲目"等 10 条规则），
+任一条不通过即中止构建。
+
 产物：`dist/LyricFeverDirect.app`；脚本默认会**自动安装**到
 `/Volumes/三星2T/Applications/LyricFeverDirect.app`（换位置用
 `LYRIC_FEVER_INSTALL_DIR=/Applications ./build.sh`）。同一块 APFS 卷上移动/复制

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 import AppleMusicBridge
 
 /// Menu-bar control. Clicking the icon opens a now-playing panel
@@ -12,27 +13,86 @@ final class StatusBarController {
     private var nowPlayingWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var outsideMonitor: Any?
+    private var cancellables = Set<AnyCancellable>()
 
     init(state: AppState, panel: KaraokePanel) {
         self.state = state
         self.panel = panel
         configure()
         observeNotifications()
+        observeState()
         installHotKeys()
     }
 
     private func configure() {
         if let button = statusItem.button {
-            button.image = NSImage(
-                systemSymbolName: "music.note",
-                accessibilityDescription: "歌词浮窗"
-            )
-            button.image?.isTemplate = true
             button.target = self
             button.action = #selector(toggleNowPlaying)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
+        updateStatusItem()
     }
+
+    // MARK: - Menu-bar item content
+
+    /// Keep the status item in sync with both what the user chose to show and
+    /// what is playing.
+    ///
+    /// Why the `Task` in the sinks: `objectWillChange` fires *before* the
+    /// value lands (that is what "will" means), so reading `state` directly in
+    /// the closure would render the previous track. Deferring one hop lets the
+    /// assignment complete first.
+    private func observeState() {
+        state.$menuBarDisplay
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.updateStatusItem() }
+            }
+            .store(in: &cancellables)
+
+        // Covers track changes — AppState relays its monitor's notifications.
+        state.objectWillChange
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.updateStatusItem() }
+            }
+            .store(in: &cancellables)
+    }
+
+    private func updateStatusItem() {
+        guard let button = statusItem.button else { return }
+        let choice = state.menuBarDisplay
+        let track = state.monitor.track
+
+        // All three switched off would leave an invisible, unclickable status
+        // item — the app would have no entry point. The icon is the floor.
+        let useIcon = choice.showsIcon || choice.isEffectivelyEmpty
+        if useIcon {
+            if button.image == nil {
+                let image = NSImage(systemSymbolName: "music.note",
+                                    accessibilityDescription: "歌词浮窗")
+                image?.isTemplate = true
+                button.image = image
+            }
+        } else {
+            button.image = nil
+        }
+        button.imagePosition = useIcon ? .imageLeading : .noImage
+        button.title = choice.label(title: track?.title, artist: track?.artist)
+
+        if let track {
+            button.toolTip = "《\(track.title)》- \(track.artist)"
+        } else {
+            button.toolTip = "歌词浮窗"
+        }
+
+        // Logged on change only, so it documents what the user configured
+        // without filling the log on every track tick.
+        let summary = "\(useIcon ? "[图标]" : "")\(button.title)"
+        guard summary != lastMenuSummary else { return }
+        lastMenuSummary = summary
+        AppLog.info("菜单栏显示: \(summary.isEmpty ? "(空)" : summary)")
+    }
+
+    private var lastMenuSummary = ""
 
     private func observeNotifications() {
         NotificationCenter.default.addObserver(forName: .resetPanelPosition, object: nil, queue: .main) { [weak self] _ in

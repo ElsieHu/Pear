@@ -59,7 +59,7 @@ struct KaraokeView: View {
     @ViewBuilder
     private var lyricsBody: some View {
         if let lyrics = state.lyrics, !lyrics.lines.isEmpty {
-            TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { _ in
+            TimelineView(.periodic(from: .now, by: refreshInterval)) { _ in
                 let pos = state.monitor.smoothPosition
                 let idx = lyrics.activeLineIndex(at: pos) ?? 0
                 let line = lyrics.lines[idx]
@@ -71,6 +71,13 @@ struct KaraokeView: View {
                         progress: progress,
                         appearance: ap
                     )
+                    // `.id` gives each line an identity tied to its index, so
+                    // advancing swaps one view for another — and *that* is
+                    // what makes the transition below run. Without it the Text
+                    // simply replaced its contents mid-frame, which read as a
+                    // hard cut.
+                    .id(idx)
+                    .transition(Self.lineChangeTransition)
                     if ap.showNextLine, idx + 1 < lyrics.lines.count {
                         KaraokeLine(
                             text: lyrics.lines[idx + 1].text,
@@ -79,12 +86,36 @@ struct KaraokeView: View {
                             scale: ap.nextLineScale,
                             opacity: ap.dimOpacity
                         )
+                        .id(idx + 1)
+                        .transition(Self.lineChangeTransition)
                     }
                 }
                 .frame(maxWidth: ap.maxWidth, alignment: ap.frameAlignment)
-                .animation(.easeOut(duration: 0.18), value: idx)
+                .animation(Self.lineChangeAnimation, value: idx)
             }
         }
+    }
+
+    /// How often the pill redraws, chosen for what is actually on screen.
+    ///
+    /// A blanket 60 Hz costs ~17% CPU for no visible gain when there is
+    /// nothing moving: paused playback shows a static line, and with the
+    /// sweep off only the line *index* matters. So spend the frames only when
+    /// the highlight is genuinely sweeping.
+    private var refreshInterval: TimeInterval {
+        guard state.monitor.isPlaying else { return 1.0 / 10.0 }
+        return ap.sweepEnabled ? 1.0 / 60.0 : 1.0 / 20.0
+    }
+
+    /// Line-to-line hand-off: the finished line leaves upward, the next one
+    /// arrives from below — the direction lyrics actually travel.
+    static let lineChangeAnimation: Animation = .easeOut(duration: 0.26)
+
+    static var lineChangeTransition: AnyTransition {
+        .asymmetric(
+            insertion: .move(edge: .bottom).combined(with: .opacity),
+            removal: .move(edge: .top).combined(with: .opacity)
+        )
     }
 }
 

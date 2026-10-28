@@ -24,6 +24,7 @@ struct SettingsView: View {
             manualColorSection
             shapeSection
             behaviourSection
+            menuBarSection
             statusSection
         }
         .formStyle(.grouped)
@@ -192,6 +193,31 @@ struct SettingsView: View {
                 NotificationCenter.default.post(name: .resetPanelPosition, object: nil)
             }
         }
+    }
+
+    // MARK: - Menu bar
+
+    private var menuBarSection: some View {
+        Section("菜单栏") {
+            Toggle("显示图标", isOn: $state.menuBarDisplay.showsIcon)
+            Toggle("显示歌曲名", isOn: $state.menuBarDisplay.showsTitle)
+            Toggle("显示歌手名", isOn: $state.menuBarDisplay.showsArtist)
+
+            Text(menuBarHint)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var menuBarHint: String {
+        let d = state.menuBarDisplay
+        if d.isEffectivelyEmpty {
+            return "至少要留一项，否则菜单栏入口会消失 —— 已自动保留图标。"
+        }
+        let preview = d.label(title: state.monitor.track?.title ?? "歌曲名",
+                              artist: state.monitor.track?.artist ?? "歌手名")
+        let iconPart = d.showsIcon ? "♪ " : ""
+        return "当前：\(iconPart)\(preview)　(过长会自动截断)"
     }
 
     // MARK: - Status

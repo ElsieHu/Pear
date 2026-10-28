@@ -16,6 +16,7 @@ final class KaraokePanel: NSPanel {
     private let state: AppState
     private var hosting: NSView?
     private var cancellable: AnyCancellable?
+    private var stateCancellable: AnyCancellable?
 
     init(state: AppState) {
         self.state = state
@@ -40,30 +41,35 @@ final class KaraokePanel: NSPanel {
         hasShadow = false
         acceptsMouseMovedEvents = true
 
+        // Why a plain NSView container instead of the hosting view directly:
+        // an NSHostingView as `contentView` resizes the *window* to its
+        // intrinsic size the instant the lyric text changes — and it does so
+        // immediately, with no animation to interrupt it. That snap was the
+        // main reason line changes felt abrupt: the pill was already at its
+        // new width before any animation could run, so `refit` found nothing
+        // left to animate. A plain container has no intrinsic size, which
+        // hands size control back to `refit`.
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 56))
         let hosting = NSHostingView(rootView: KaraokeView().environmentObject(state))
+        hosting.frame = container.bounds
         hosting.autoresizingMask = [.width, .height]
-        contentView = hosting
+        container.addSubview(hosting)
+        contentView = container
         self.hosting = hosting
 
         applyAppearance()
         restoreFrame()
         observeAppearanceChanges()
         observeResizes()
+        // The window no longer sizes itself, so set the real size up front —
+        // otherwise the pill appears at its 420×56 placeholder for a frame.
+        refit(animated: false)
         startFittingLoop()
     }
 
     // MARK: - Re-centring on auto-resize
 
-    /// The panel resizes *itself* to the hosting view's ideal size — AppKit
-    /// does this, and `refit` therefore almost never has anything to do
-    /// (measured: `frame.width == fittingSize.width` at every tick).
-    ///
-    /// That auto-resize keeps the frame **origin** fixed, so every new lyric
-    /// line grows the pill from its left edge: “居中” looked like it did
-    /// nothing. So instead of fighting the mechanism, correct the origin
-    /// afterwards, keeping still whichever edge the alignment asks for.
     private var lastKnownWidth: CGFloat = 0
-    private var isReanchoring = false
 
     private func observeResizes() {
         lastKnownWidth = frame.width
@@ -75,8 +81,13 @@ final class KaraokePanel: NSPanel {
         )
     }
 
+    /// Diagnostic only.
+    ///
+    /// With the container in place the window should never resize itself —
+    /// every size change is supposed to come from `refit`, animated. If this
+    /// logs, the container has stopped insulating us and resizes are again
+    /// cutting the animation short.
     @objc private func panelDidResize(_ note: Notification) {
-        guard !isReanchoring else { return }
         let width = frame.width
         let delta = width - lastKnownWidth
         guard abs(delta) > 0.5 else {
@@ -84,31 +95,9 @@ final class KaraokePanel: NSPanel {
             return
         }
         lastKnownWidth = width
-
-        // Dragging doesn't change the size, so the centre the user picked
-        // survives; this only compensates for the width change itself.
-        let fraction: CGFloat
-        switch state.appearance.textAlignmentRaw {
-        case "leading":  fraction = 0     // left edge stays put
-        case "trailing": fraction = 1     // right edge stays put
-        default:         fraction = 0.5   // centre stays put
-        }
-        guard fraction > 0 else { return }
-
-        isReanchoring = true
-        let before = frame
-        var origin = before.origin
-        origin.x -= delta * fraction
-        setFrameOrigin(origin)
-        isReanchoring = false
-        lastKnownWidth = frame.width
-
-        if Date().timeIntervalSince(lastReanchorLog) > 15.0 {
-            lastReanchorLog = Date()
-            AppLog.info(String(format: "重锚 w %+.0f minX %.0f→%.0f midX %.0f→%.0f 对齐=%@",
-                               delta, before.minX, frame.minX,
-                               before.midX, frame.midX,
-                               state.appearance.textAlignmentRaw))
+        if Date().timeIntervalSince(lastResizeLog) > 15.0 {
+            lastResizeLog = Date()
+            AppLog.info(String(format: "窗口尺寸变化 w=%+.0f (正常应由 refit 动画驱动)", delta))
         }
     }
 
@@ -139,14 +128,32 @@ final class KaraokePanel: NSPanel {
         Task { [weak self] in
             while !Task.isCancelled {
                 self?.tick()
-                try? await Task.sleep(nanoseconds: 250_000_000)
+                // Polling is only the safety net — 10 Hz is plenty. Track and
+                // appearance changes are pushed (see `observeStateChanges`),
+                // so a new lyric line's width is picked up immediately instead
+                // of waiting for the next tick.
+                try? await Task.sleep(nanoseconds: 100_000_000)
             }
+        }
+        observeStateChanges()
+    }
+
+    /// Re-measure the moment something changes, rather than at the next poll.
+    private func observeStateChanges() {
+        stateCancellable = state.objectWillChange.sink { [weak self] _ in
+            // `objectWillChange` fires *before* the new value lands; hop once
+            // so `fittingSize` reflects the change we were told about.
+            Task { @MainActor in self?.refit(animated: true) }
         }
     }
 
     private func tick() {
         let shouldShow = state.panelContent != .hidden
         if shouldShow && !isVisible {
+            // Settle the size *before* the first appearance: showing the
+            // placeholder width first and animating to the real one looks
+            // like the pill inflating on launch.
+            refit(animated: false)
             orderFrontRegardless()
         } else if !shouldShow && isVisible {
             orderOut(nil)
@@ -158,10 +165,19 @@ final class KaraokePanel: NSPanel {
 
     /// Rate-limited note of how the pill is resizing, for the log.
     private var lastFitLog = Date.distantPast
-    private var lastReanchorLog = Date.distantPast
+    private var lastResizeLog = Date.distantPast
+    /// Timestamp until which a resize animation is still in flight.
+    private var animatingUntil = Date.distantPast
+    /// Kept in step with the line-swap animation in `KaraokeView` so the pill
+    /// and its text settle at the same moment.
+    private static let resizeDuration: TimeInterval = 0.26
 
     private func refit(animated: Bool) {
         guard let hosting, state.panelContent != .hidden else { return }
+        // Don't interrupt an in-flight resize: restarting from a halfway
+        // frame makes the pill stutter instead of glide.
+        if animated, Date() < animatingUntil { return }
+
         let target = hosting.fittingSize
         guard target.width >= 24, target.height >= 16, target.width.isFinite else { return }
 
@@ -200,9 +216,10 @@ final class KaraokePanel: NSPanel {
         }
 
         if animated {
+            animatingUntil = Date().addingTimeInterval(Self.resizeDuration)
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.18
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                ctx.duration = Self.resizeDuration
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 animator().setFrame(rect, display: true)
             }
         } else {
