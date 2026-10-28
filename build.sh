@@ -18,6 +18,28 @@ if [ ! -f "$BIN" ]; then
     exit 1
 fi
 
+echo "==> 自检歌词匹配规则"
+# Why not `swift test`: this machine has only the Command Line Tools — XCTest
+# is absent and swift-testing's lib_TestingInterop.dylib is missing, so the
+# test bundle cannot even be launched. This self-check compiles the matching
+# rules standalone and runs on every build, which is what actually keeps the
+# "wrong song's lyrics" bug from coming back.
+VERIFY_BIN="$PROJECT_DIR/.build/verify_match"
+VERIFY_LOG="$PROJECT_DIR/.build/verify_build.log"
+if swiftc -O "$PROJECT_DIR/Sources/AppleMusicBridge/LyricMatch.swift" \
+        "$PROJECT_DIR/tools/verify_match.swift" \
+        -o "$VERIFY_BIN" >"$VERIFY_LOG" 2>&1; then
+    # `set -e` + a failing check must abort the build, not print and continue.
+    if ! "$VERIFY_BIN"; then
+        echo "    ! 匹配规则自检未通过，已中止构建"
+        exit 1
+    fi
+else
+    echo "    ! 自检程序编译失败："
+    tail -5 "$VERIFY_LOG"
+    exit 1
+fi
+
 echo "==> 生成图标"
 ICONSET="$PROJECT_DIR/.build/AppIcon.iconset"
 rm -rf "$ICONSET"

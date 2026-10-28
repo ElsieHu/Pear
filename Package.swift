@@ -14,5 +14,6 @@ let package = Package(
         .target(name: "AppleMusicBridge", dependencies: ["LyricEngine"]),
         .executableTarget(name: "LyricFeverDirectApp", dependencies: ["LyricEngine", "AppleMusicBridge"]),
         .testTarget(name: "LyricEngineTests", dependencies: ["LyricEngine"]),
+        .testTarget(name: "AppleMusicBridgeTests", dependencies: ["AppleMusicBridge"]),
     ]
 )

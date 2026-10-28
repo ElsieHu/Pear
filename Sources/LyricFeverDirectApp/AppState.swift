@@ -235,7 +235,8 @@ final class AppState: ObservableObject {
             lastError = nil
             retryEligible = false
             retryAttempt = 0
-            AppLog.info("拿到歌词 《\(track.title)》 \(cached.lines.count) 行, 逐字=\(cached.hasWordTiming)")
+            let m = AppleMusicCacheLyricsSource.bestMatch(for: track)
+            AppLog.info("拿到歌词 《\(track.title)》 \(cached.lines.count) 行, 逐字=\(cached.hasWordTiming) 匹配到《\(m?.entry.title ?? "?")》分=\(m?.score ?? 0)")
             return
         } catch let error as AppleMusicCacheLyricsSource.CacheError {
             switch error {
@@ -277,7 +278,7 @@ final class AppState: ObservableObject {
         nextRetryDate = Date().addingTimeInterval(Self.backoff[idx])
         if retryAttempt <= 1 || retryAttempt % 4 == 0 {
             let d = AppleMusicCacheLyricsSource.diagnose(for: track)
-            AppLog.info("未命中 (第 \(retryAttempt) 次) 缓存曲目数=\(d.cacheEntryCount) 最高分=\(d.bestScore) 候选=\(d.bestTitle ?? "无") 找到歌曲记录=\(d.foundSongRecord) 目录标记有词=\(String(describing: d.catalogueHasSyncedLyrics))")
+            AppLog.info("未命中 (第 \(retryAttempt) 次) 缓存曲目数=\(d.cacheEntryCount) 最高分=\(d.bestScore) 候选=\(d.bestTitle ?? "无") 已拒绝=\(d.rejectedTitle ?? "无")(\(d.rejectedScore)) 找到歌曲记录=\(d.foundSongRecord) 目录标记有词=\(String(describing: d.catalogueHasSyncedLyrics))")
         }
     }
 

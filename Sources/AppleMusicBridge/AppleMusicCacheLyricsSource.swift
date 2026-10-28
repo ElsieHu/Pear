@@ -45,6 +45,10 @@ public enum AppleMusicCacheLyricsSource {
         /// in the catalogue at all?
         public let catalogueHasSyncedLyrics: Bool?
         public let foundSongRecord: Bool
+        /// Highest-scoring candidate that was *rejected* by the identity gate
+        /// — i.e. the song we nearly showed the wrong lyrics for.
+        public let rejectedTitle: String?
+        public let rejectedScore: Double
     }
 
     /// One song's lyrics found in the cache.
@@ -246,55 +250,67 @@ public enum AppleMusicCacheLyricsSource {
 
     /// Same, but also reports the score so the UI can explain a near miss.
     public static func bestMatch(for track: CurrentTrack) -> (entry: Entry, score: Double)? {
-        let entries = loadEntries()
-        guard !entries.isEmpty else { return nil }
+        guard let top = rankedEntries(for: track).first(where: { $0.accepted }) else { return nil }
+        return (top.entry, top.score)
+    }
 
-        let wantedTitle = Self.normalize(track.title)
-        let wantedArtist = Self.normalize(track.artist)
+    /// A cache entry scored against the playing track.
+    private struct Ranked {
+        let entry: Entry
+        let score: Double
+        /// False when it only *looks* similar (e.g. same artist) and must
+        /// never be used as the answer.
+        let accepted: Bool
+    }
 
-        var best: Entry?
-        var bestScore = 0.0
-        for e in entries {
-            let title = Self.normalize(e.title)
-            let artist = Self.normalize(e.artist)
-            var score = 0.0
+    /// Every entry, best first, each flagged as usable or not.
+    ///
+    /// Why the acceptance gate is separate from the score
+    /// -------------------------------------------------
+    /// An earlier version summed weighted signals and accepted anything over
+    /// a threshold. "Same artist" alone scored 4 and the threshold *was* 4,
+    /// so when 《珠玉》 started playing while the cache still held only the
+    /// previous track 《我管不住我自己》 (same artist, same album), the app
+    /// happily displayed that track's 69 lines — it looked like the lyrics
+    /// were wrong until you hit refresh.
+    /// A score can only rank; it cannot decide. Identity needs a gate:
+    /// the title must agree, or the artist *and* duration must both agree.
+    private static func rankedEntries(for track: CurrentTrack) -> [Ranked] {
+        let wantedTitle = LyricMatch.normalize(track.title)
+        let wantedArtist = LyricMatch.normalize(track.artist)
 
-            if !wantedTitle.isEmpty && title == wantedTitle { score += 6 }
-            else if !wantedTitle.isEmpty && (title.contains(wantedTitle) || wantedTitle.contains(title)) { score += 3 }
-
-            if !wantedArtist.isEmpty && artist == wantedArtist { score += 4 }
-            else if !wantedArtist.isEmpty && (artist.contains(wantedArtist) || wantedArtist.contains(artist)) { score += 2 }
-
-            if e.duration > 0, track.duration > 0, abs(e.duration - track.duration) < 2.5 { score += 3 }
-
-            if score > bestScore {
-                bestScore = score
-                best = e
-            }
+        var ranked: [Ranked] = []
+        for e in loadEntries() {
+            let v = LyricMatch.evaluate(candidateTitle: LyricMatch.normalize(e.title),
+                                        candidateArtist: LyricMatch.normalize(e.artist),
+                                        candidateDuration: e.duration,
+                                        targetTitle: wantedTitle,
+                                        targetArtist: wantedArtist,
+                                        targetDuration: track.duration)
+            ranked.append(Ranked(entry: e, score: v.score, accepted: v.accepted))
         }
-        // Require at least a plausible match so we never show another song's
-        // lyrics: either the title matched, or artist+duration agreed.
-        guard bestScore >= 4, let best else { return nil }
-        return (best, bestScore)
+        return ranked.sorted { $0.score > $1.score }
     }
 
     /// Explain *why* there are no lyrics, so the UI never has to guess.
     public static func diagnose(for track: CurrentTrack) -> Diagnostic {
         let scanResult = currentScan()
-        let match = bestMatch(for: track)
+        let ranked = rankedEntries(for: track)
+        let match = ranked.first { $0.accepted }
+        let rejected = ranked.first { !$0.accepted }
 
         // Is there a *song record* for this track (Apple knows the song) that
         // says it simply has no time-synced lyrics?
-        let wantedTitle = normalize(track.title)
+        let wantedTitle = LyricMatch.normalize(track.title)
         var catalogueFlag: Bool?
         var foundRecord = false
         for r in scanResult.records {
-            let title = normalize(r.title)
-            let artist = normalize(r.artist)
+            let title = LyricMatch.normalize(r.title)
+            let artist = LyricMatch.normalize(r.artist)
             let titleOK = title == wantedTitle
                 || (!wantedTitle.isEmpty && (title.contains(wantedTitle) || wantedTitle.contains(title)))
-            let artistOK = artist == normalize(track.artist)
-                || (!artist.isEmpty && (artist.contains(normalize(track.artist)) || normalize(track.artist).contains(artist)))
+            let artistOK = artist == LyricMatch.normalize(track.artist)
+                || (!artist.isEmpty && (artist.contains(LyricMatch.normalize(track.artist)) || LyricMatch.normalize(track.artist).contains(artist)))
             let durationOK = r.duration > 0 && track.duration > 0 && abs(r.duration - track.duration) < 2.5
             if (titleOK && artistOK) || (titleOK && durationOK) {
                 foundRecord = true
@@ -307,7 +323,9 @@ public enum AppleMusicCacheLyricsSource {
                           bestScore: match?.score ?? 0,
                           bestTitle: match?.entry.title,
                           catalogueHasSyncedLyrics: catalogueFlag,
-                          foundSongRecord: foundRecord)
+                          foundSongRecord: foundRecord,
+                          rejectedTitle: rejected?.entry.title,
+                          rejectedScore: rejected?.score ?? 0)
     }
 
     /// Parse the cached lyrics for the given track.
@@ -376,13 +394,6 @@ public enum AppleMusicCacheLyricsSource {
         return obj
     }
 
-    /// Lowercase + strip punctuation/whitespace so titles compare reliably
-    /// across "Don't Stop" / "Dont Stop" style differences.
-    private static func normalize(_ s: String) -> String {
-        let lowered = s.lowercased()
-        let allowed = lowered.filter { $0.isLetter || $0.isNumber }
-        return allowed.isEmpty ? lowered.filter { !$0.isWhitespace } : allowed
-    }
 }
 
 private extension Data {
