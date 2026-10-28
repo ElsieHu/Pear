@@ -36,11 +36,22 @@ final class ArtworkLoader: ObservableObject {
         image = nil
         dominantHex = nil
         Task { [weak self] in
-            guard let (data, _) = try? await URLSession.shared.data(from: url),
-                  let img = NSImage(data: data) else { return }
-            self?.memoryCache.setObject(img, forKey: key as NSString)
-            self?.image = img
-            self?.dominantHex = Self.dominantHex(from: img)
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard let img = NSImage(data: data) else {
+                    AppLog.warn("封面下载成功但解码失败: \(url.absoluteString)")
+                    return
+                }
+                self?.memoryCache.setObject(img, forKey: key as NSString)
+                self?.image = img
+                self?.dominantHex = Self.dominantHex(from: img)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                AppLog.info("封面已加载 \(data.count) 字节 HTTP \(status) 主色=\(self?.dominantHex ?? "-")")
+            } catch {
+                // Almost always “no internet” or a CDN hiccup — say so
+                // instead of leaving a silent placeholder square.
+                AppLog.warn("封面下载失败: \(error.localizedDescription)")
+            }
         }
     }
 

@@ -41,10 +41,26 @@ final class MusicPoller {
         reschedule()
     }
 
+    /// Consecutive failed polls. After a few, slow right down: while the
+    /// Automation grant is missing every attempt fails the same way, and
+    /// asking once a second achieves nothing but wasted processes.
+    private var failures = 0
+
     func pollOnce() {
         queue.async { [onSnapshot] in
             guard let snapshot = MusicScript.mergedSnapshot() else { return }
             onSnapshot(snapshot)
+        }
+    }
+
+    private func noteResult(_ snapshot: MusicSnapshot?) {
+        if snapshot == nil {
+            failures += 1
+            if failures == 3 { setInterval(5.0) }
+            else if failures == 6 { setInterval(15.0) }
+        } else if failures > 0 {
+            failures = 0
+            setInterval(1.0)   // the monitor re-adjusts for playing/idle
         }
     }
 
@@ -57,8 +73,10 @@ final class MusicPoller {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         let ms = max(200, Int(interval * 1000))
         timer.schedule(deadline: .now() + interval, repeating: .milliseconds(ms), leeway: .milliseconds(200))
-        timer.setEventHandler { [onSnapshot] in
-            guard let snapshot = MusicScript.mergedSnapshot() else { return }
+        timer.setEventHandler { [weak self, onSnapshot] in
+            let snapshot = MusicScript.mergedSnapshot()
+            self?.noteResult(snapshot)
+            guard let snapshot else { return }
             onSnapshot(snapshot)
         }
         timer.resume()

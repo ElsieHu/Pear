@@ -91,36 +91,18 @@ public enum MusicScript {
                              persistentID: parts[6])
     }
 
-    /// AppleScript (authoritative, needs Automation permission) merged with
-    /// MediaRemote (no permission, but coarser). Whoever has the data wins.
-    static func mergedSnapshot() -> MusicSnapshot? {
-        let script = read()
-        let remote = MediaRemoteBridge.snapshot()
-
-        guard let a = script else { return remote }
-        guard let r = remote else { return a }
-
-        // AppleScript carries the real library ID and a live position, so
-        // prefer it wherever it actually has something to say.
-        let title = a.title.isEmpty ? r.title : a.title
-        let artist = a.artist.isEmpty ? r.artist : a.artist
-        let album = a.album.isEmpty ? r.album : a.album
-        let duration = a.duration > 0 ? a.duration : r.duration
-        let persistentID = a.persistentID.isEmpty ? r.persistentID : a.persistentID
-        // Only fall back to MediaRemote's elapsed time when AppleScript gave
-        // us no track at all (i.e. permission is missing) — otherwise the
-        // live AppleScript position is always more accurate.
-        let position = a.title.isEmpty ? r.position : a.position
-        let state = a.state.isEmpty ? r.state : a.state
-
-        return MusicSnapshot(state: state,
-                             position: position,
-                             title: title,
-                             artist: artist,
-                             album: album,
-                             duration: duration,
-                             persistentID: persistentID)
-    }
+    /// The one and only snapshot source.
+    ///
+    /// This used to merge AppleScript with the private MediaRemote framework,
+    /// on the theory that MediaRemote needs no permission and could cover for
+    /// a missing Automation grant. Two measurements killed that:
+    /// - On current macOS `MRMediaRemoteGetNowPlayingInfo` returns nil even
+    ///   while music is playing, so it contributed nothing.
+    /// - Calling it once per second made macOS pop “LyricFeverDirect.app 想
+    ///   访问 Apple Music…你的媒体资料库” over and over (that prompt is
+    ///   MediaRemote's, not Apple Events').
+    /// So: AppleScript only.
+    static func mergedSnapshot() -> MusicSnapshot? { read() }
 
     @discardableResult
     static func run(_ source: String) -> String? {

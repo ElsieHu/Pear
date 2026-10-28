@@ -87,28 +87,29 @@ if [ -f "$KEYCHAIN" ]; then
 fi
 
 if security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$IDENTITY"; then
-    # codesign only searches the keychain *search list*, not an arbitrary
-    # --keychain path. Rebuild that list from scratch each time: it easily
-    # accumulates duplicates and stale entries (a leftover keychain under a
-    # non-ASCII path makes `security` fail outright), and either breaks
-    # codesign with errSecInternalComponent.
-    OTHERS=$(security list-keychains -d user 2>/dev/null \
-        | sed 's/^ *//;s/"//g' \
-        | grep -v "LyricFeverDirect.keychain" \
-        | grep -v "LFD.keychain" \
-        | tr '\n' ' ')
-    security list-keychains -d user -s "$KEYCHAIN" $OTHERS >/dev/null 2>&1
+    # Two things codesign needs that are easy to miss:
+    # 1. It searches the keychain *search list*, not the --keychain path, so
+    #    ours has to be in the list (keep login/system too — a list with only
+    #    ours also fails with errSecInternalComponent).
+    # 2. The key re-locks between sessions, and the partition list has to be
+    #    re-applied or codesign fails with errSecInternalComponent despite the
+    #    identity being visible to find-identity.
+    security set-key-partition-list \
+        -S apple-tool:,apple:,codesign: -s -k lyricfever "$KEYCHAIN" >/dev/null 2>&1
+    security list-keychains -d user -s \
+        "$KEYCHAIN" \
+        "$HOME/Library/Keychains/login.keychain-db" \
+        /Library/Keychains/System.keychain >/dev/null 2>&1
 
-    # `codesign ... | tail` would report tail's status, not codesign's, and
-    # silently claim success after a failure — capture the status properly.
-    SIGN_OUT=$(codesign --force --deep --sign "$IDENTITY" \
-        --keychain "$KEYCHAIN" --timestamp=none "$APP_DIR" 2>&1)
-    SIGN_RC=$?
-    if [ $SIGN_RC -eq 0 ]; then
+    # `set -e` aborts on `VAR=$(failing command)`, so put codesign in the
+    # condition instead of capturing `$?` — otherwise a failure silently
+    # skips both the message and the ad-hoc fallback.
+    if SIGN_OUT=$(codesign --force --deep --sign "$IDENTITY" \
+            --keychain "$KEYCHAIN" --timestamp=none "$APP_DIR" 2>&1); then
         echo "    已用固定身份签名：$IDENTITY  (授权只需给一次)"
     else
-        echo "    ！固定身份签名失败 (rc=$SIGN_RC): $SIGN_OUT"
-        echo "    回退 ad-hoc —— 下次重建后需重新允许“自动化”"
+        echo "    ! 固定身份签名失败: $SIGN_OUT"
+        echo "      回退 ad-hoc —— 下次重建后需重新允许“自动化”"
         codesign --force --deep --sign - "$APP_DIR" 2>&1 | tail -3
     fi
 else
@@ -118,4 +119,39 @@ else
 fi
 
 echo "==> 完成: $APP_DIR"
+
+# ---- 安装到 Applications ----
+# 默认装到外置盘的 Applications（用户习惯的安装位置）。外置盘没挂载时
+# 不要连构建一起失败，只是把产物留在 dist/ 并提示。
+INSTALL_DIR="${LYRIC_FEVER_INSTALL_DIR:-/Volumes/三星2T/Applications}"
+if [ "$1" = "--no-install" ]; then
+    echo "==> 跳过安装 (--no-install)"
+elif [ ! -d "$INSTALL_DIR" ]; then
+    echo "!! 安装目录不存在：$INSTALL_DIR"
+    echo "   外置盘可能没挂载，产物留在 $APP_DIR"
+else
+    echo "==> 安装到 $INSTALL_DIR"
+    TARGET="$INSTALL_DIR/LyricFeverDirect.app"
+    BIN_PATH="$TARGET/Contents/MacOS/LyricFeverDirectApp"
+    WAS_RUNNING=0
+    # 旧版本正在跑的话必须先退出，否则会留下指向已删除文件的僵尸进程
+    if pgrep -fx "$BIN_PATH" >/dev/null 2>&1; then
+        WAS_RUNNING=1
+        pkill -x -f "$BIN_PATH" >/dev/null 2>&1
+        sleep 1
+    fi
+    rm -rf "$TARGET"
+    # 同一块 APFS 卷上复制：只改目录项，签名与 TCC 授权都原样保留
+    cp -R "$APP_DIR" "$TARGET"
+    if codesign --verify --deep --strict "$TARGET" >/dev/null 2>&1; then
+        echo "    已安装并校验签名：$TARGET"
+    else
+        echo "    ! 安装后签名校验失败，请检查：codesign -vv --deep $TARGET"
+    fi
+    if [ "$WAS_RUNNING" = "1" ]; then
+        open "$TARGET"
+        echo "    已重新启动"
+    fi
+fi
+
 echo "    首次运行需要在「系统设置 ▸ 隐私与安全性 ▸ 自动化」允许控制“音乐”（只需一次）。"

@@ -41,6 +41,7 @@ final class AppState: ObservableObject {
 
     private var currentArtwork: AppleMusicCacheLyricsSource.ArtworkInfo?
     private var artworkCancellable: AnyCancellable?
+    private var monitorCancellable: AnyCancellable?
 
     /// User-controlled visibility (menu bar toggle).
     @Published var windowEnabled = true
@@ -85,9 +86,14 @@ final class AppState: ObservableObject {
         MusicScript.diagnosticHandler = { message in
             AppLog.warn("AppleScript: \(message)")
         }
-        AppLog.info("MediaRemote 可用: \(MediaRemoteBridge.isAvailable)")
-
         monitor.start()
+        // `monitor` is its own ObservableObject; views observe *this* object,
+        // so its @Published changes would not reach them on their own. Without
+        // this relay the menu panel's play/pause icon and track title only
+        // refreshed by accident (whenever some unrelated @Published changed).
+        monitorCancellable = monitor.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+
         // Artwork arrives asynchronously; re-derive colours once it lands.
         artworkCancellable = ArtworkLoader.shared.$dominantHex
             .sink { [weak self] _ in
@@ -124,10 +130,17 @@ final class AppState: ObservableObject {
         let info = AppleMusicCacheLyricsSource.artworkInfo(for: track)
         currentArtwork = info
         ArtworkLoader.shared.load(url: info?.url(size: 300))
+        if let info {
+            AppLog.info("封面已解析: url=\(info.url(size: 300)?.absoluteString ?? "nil") bg=\(info.bgColorHex ?? "-") fg=\(info.textColorHex ?? "-")")
+        } else {
+            AppLog.warn("封面未找到: 《\(track.title)》- \(track.artist) [\(String(format: "%.1f", track.duration))s]")
+        }
         applyAutoColors()
     }
 
     /// Turn the artwork's palette into the colours the pill should use.
+    private var lastColorLog = ""
+
     private func applyAutoColors() {
         guard let info = currentArtwork, appearance.colorModeRaw != "manual" else {
             autoBackgroundHex = nil
@@ -142,6 +155,10 @@ final class AppState: ObservableObject {
             autoBackgroundHex = info.bgColorHex
             autoTextHex = info.textColorHex
         }
+        let msg = "配色[\(appearance.colorModeRaw)] bg=\(autoBackgroundHex ?? "-") fg=\(autoTextHex ?? "-") 有封面=\(currentArtwork != nil)"
+        guard msg != lastColorLog else { return }
+        lastColorLog = msg
+        AppLog.info(msg)
     }
 
     /// Detect track changes and (re)fetch lyrics from Apple Music.
@@ -175,13 +192,17 @@ final class AppState: ObservableObject {
                 cacheDirty = false
                 nextRetryDate = .distantPast
                 if let t = monitor.track {
-                    let via = t.persistentID.hasPrefix("mr|") ? "MediaRemote(未获自动化授权)" : "AppleScript"
-                    AppLog.info("曲目切换 → 《\(t.title)》- \(t.artist) [\(String(format: "%.1f", t.duration))s] 来源=\(via)")
+                    AppLog.info("曲目切换 → 《\(t.title)》- \(t.artist) [\(String(format: "%.1f", t.duration))s] 来源=AppleScript")
                 } else {
                     AppLog.warn("拿不到当前曲目 → 见上一条 AppleScript 具体报错 (若为 -10004 则是自动化未授权, 请在本应用重新打开后到「系统设置 ▸ 隐私与安全性 ▸ 自动化」允许控制“音乐”)")
                 }
                 resolveArtwork()
                 await fetchCurrent()
+                // The cache is written asynchronously, so the first lookup
+                // can miss the artwork even though the song is known. The
+                // lyrics path retries; the artwork path must too, or the
+                // album colours silently stay at the default forever.
+                if currentArtwork == nil { resolveArtwork() }
             } else if monitor.track == nil, Date().timeIntervalSince(lastNoTrackLog) > 10 {
                 lastNoTrackLog = Date()
                 AppLog.warn("仍无曲目 (具体原因见上面的 AppleScript 报错行)")
@@ -191,6 +212,7 @@ final class AppState: ObservableObject {
                     cacheDirty = false
                     retryAttempt += 1
                     await fetchCurrent()
+                    if currentArtwork == nil { resolveArtwork() }
                 }
             }
             try? await Task.sleep(nanoseconds: 250_000_000)

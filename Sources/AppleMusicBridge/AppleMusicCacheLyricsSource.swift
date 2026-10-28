@@ -109,10 +109,35 @@ public enum AppleMusicCacheLyricsSource {
     }
 
     /// Scan the cache and return every song that has TTML lyrics.
-    public static func loadEntries() -> [Entry] { scan().entries }
+    public static func loadEntries() -> [Entry] { currentScan().entries }
 
     /// Every song record in the cache, lyrics or not.
-    public static func songRecords() -> [SongRecord] { scan().records }
+    public static func songRecords() -> [SongRecord] { currentScan().records }
+
+    /// A single lookup used to call `scan()` three or four times (lyrics +
+    /// artwork + diagnostics), each one re-reading and re-parsing every file
+    /// in the cache directory. Memoise briefly so one track change costs one
+    /// scan, not four. Short TTL: new lyrics land asynchronously, so we must
+    //  not hold a stale view for long.
+    private static let scanTTL: TimeInterval = 2.0
+    private nonisolated(unsafe) static var memo: (at: Date, scan: Scan)?
+    private static let memoLock = NSLock()
+
+    private static func currentScan() -> Scan {
+        memoLock.lock()
+        if let m = memo, Date().timeIntervalSince(m.at) < scanTTL {
+            memoLock.unlock()
+            return m.scan
+        }
+        memoLock.unlock()
+
+        let fresh = scan()
+
+        memoLock.lock()
+        memo = (Date(), fresh)
+        memoLock.unlock()
+        return fresh
+    }
 
     private static func scan() -> Scan {
         guard let dir = cacheDirectory,
@@ -255,7 +280,7 @@ public enum AppleMusicCacheLyricsSource {
 
     /// Explain *why* there are no lyrics, so the UI never has to guess.
     public static func diagnose(for track: CurrentTrack) -> Diagnostic {
-        let scanResult = scan()
+        let scanResult = currentScan()
         let match = bestMatch(for: track)
 
         // Is there a *song record* for this track (Apple knows the song) that
@@ -288,7 +313,7 @@ public enum AppleMusicCacheLyricsSource {
     /// Parse the cached lyrics for the given track.
     public static func lyrics(for track: CurrentTrack) throws -> TimedLyrics {
         guard let entry = bestEntry(for: track) else {
-            if loadEntries().isEmpty { throw CacheError.cacheUnavailable }
+            if currentScan().entries.isEmpty { throw CacheError.cacheUnavailable }
             // The Music app downloads the TTML asynchronously: "not here yet"
             // and "does not exist" are different situations, and only the
             // second one should stop the retry loop.

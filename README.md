@@ -144,10 +144,14 @@ TTML 有两种形态，解析器都支持：
 
 ```bash
 cd LyricFeverDirect
-./build.sh          # 编译 release + 打包 + ad-hoc 签名
+./build.sh          # 编译 release + 打包 + 固定身份签名 + 安装到 Applications
+./build.sh --no-install   # 只打包，产物留在 dist/
 ```
 
-产物：`dist/LyricFeverDirect.app` —— 拖到 `/Applications` 双击即可。
+产物：`dist/LyricFeverDirect.app`；脚本默认会**自动安装**到
+`/Volumes/三星2T/Applications/LyricFeverDirect.app`（换位置用
+`LYRIC_FEVER_INSTALL_DIR=/Applications ./build.sh`）。同一块 APFS 卷上移动/复制
+只改目录项，签名与「自动化」授权都原样保留，**不会重新弹权限窗**。
 
 ### 首次运行需做两件事
 
@@ -232,6 +236,82 @@ al / du / pid / t` 都安全，只有 `st` 会撞（现改名 `pstate`）。
   签名失败也被报成成功（实际静默回退 ad-hoc，等于每次重建都要重新授权）。
   改为先取 `$?` 再判断。
 
+### 「居中」无效、每行歌词都从左边缘长出（已修复）
+
+现象：设置里选了「居中」，但新歌词出现时胶囊总是以**左边缘**为基准伸缩。
+
+根因不在对齐代码，而在**窗口尺寸是谁改的**。实测日志：
+
+```
+refit进入: frameW=107 fittingW=107      ← 每个 tick 都完全相等
+refit进入: frameW=185 fittingW=185
+refit进入: frameW=195 fittingW=195
+```
+
+`KaraokePanel.refit()` 每次都发现 `frame.size == hosting.fittingSize`，于是
+**调整分支一次都没执行过**。窗口其实一直由 AppKit 自己按 `NSHostingView`
+的理想尺寸自适应，而这个自适应**保持 frame origin 不变** —— 也就是左边缘钉死。
+所以 `refit()` 里那套"保持中心"的逻辑是**死代码**。
+
+修法：不与机制对抗，改为监听 `NSWindow.didResizeNotification`，在宽度变化后
+把原点补回来（居中补 Δw/2，右对齐补 Δw，左对齐不补）：
+
+```
+修正前 midX: 1040 → 1134 → 1080 → 1100 → 1194   （乱跳）
+修正后 midX: 1097 → 1096 → 1096 → 1095 → 1095   （钉住）
+```
+
+拖动窗口不改变尺寸，所以用户拖出来的中心会被完整保留；之后每行歌词都以
+该点为中心对称伸缩。
+
+### 封面与专辑取色不生效（已修复）
+
+`resolveArtwork()` 只在**切歌那一瞬**取一次，而歌词缓存是 Music **异步**
+写入的 —— 第一次往往扑空。歌词路径有退避重试所以最终能出现，**封面/配色
+路径没有重试**，于是永久停在默认值（`#6E44FF`）。
+
+→ 在 `watchTrackChanges` 的两条分支里都补上：`if currentArtwork == nil { resolveArtwork() }`。
+顺带把 `AppleMusicCacheLyricsSource.scan()` 加了 2 秒记忆化 —— 原来一次切歌
+会全量重扫缓存目录 3～4 遍。
+
+### 菜单栏面板的播放/暂停图标不刷新（已修复）
+
+`NowPlayingView` 观察的是 `AppState`，却读 `state.monitor.isPlaying`。
+而 `monitor` 是**另一个** `ObservableObject` —— 它的 `@Published` 变化不会
+通知到观察 `AppState` 的视图。图标只在别的 `@Published`（比如 `lyrics`）
+恰好变化时"顺带"刷新。
+
+→ 在 `AppState.start()` 里把 `monitor.objectWillChange` 中继成
+`self.objectWillChange.send()`，所有读 `state.monitor.*` 的视图都能正确刷新。
+
+### 反复弹出的权限窗口（已修复）—— 两个弹窗，两个根因
+
+用户报告两个弹窗反复出现，它们**都不是**「自动化」授权：
+
+| 弹窗 | 真凶 |
+|---|---|
+| “**codesign** 想使用 **LyricFeverDirect** 钥匙串” | `build.sh` 签名时钥匙串 ACL 没生效 |
+| “**LyricFeverDirect.app** 想访问 **Apple Music**、你的音乐与视频活动以及你的媒体资料库” | **MediaRemote** 私有框架，不是 Apple Events |
+
+**① Apple Music 媒体资料库弹窗 —— 删掉 MediaRemote**
+
+当初加 `MediaRemoteBridge` 是想让它做免授权备份通道。但两个实测否掉了它：
+
+* 在当前的 macOS 上 `MRMediaRemoteGetNowPlayingInfo` **即使正在播放也返回 nil**，
+  从来没贡献过任何数据；
+* 每秒调一次 → 系统反复弹「想访问 Apple Music…媒体资料库」的授权框。
+
+`MediaRemoteBridge.swift` 已删除，`mergedSnapshot()` 改为只走 AppleScript。
+顺带给 `MusicPoller` 加了失败退避（连续失败 3 次降到 5s、6 次降到 15s），
+避免授权缺失时空转。
+
+**② codesign 钥匙串弹窗**
+
+即使 `find-identity` 看得到身份，`codesign` 仍会要求钥匙串密码，除非
+**每次签名前重跑 `security set-key-partition-list`**（会话之间钥匙串会重新上锁）。
+`build.sh` 现在每次都会做这件事，并把 `login.keychain-db` 与 `System.keychain`
+一起保留在搜索列表里（只放自己的钥匙串同样会失败）。
+
 ### Swift 6 并发踩坑（记在这里，别再踩）
 
 * 在 `@MainActor` 方法里写给 `DispatchSource.setEventHandler` /
@@ -244,7 +324,11 @@ al / du / pid / t` 都安全，只有 `st` 会撞（现改名 `pstate`）。
   追加要用 `FileHandle(forUpdatingAtPath:)`。
 * `security` 对**含中文的路径**找不到钥匙串 → 钥匙串放在
   `~/Library/Keychains/` 下。另外钥匙串会话结束会锁定，`find-identity`
-  前必须先 `unlock-keychain`；`codesign` 还要求钥匙串在搜索列表里。
+  前必须先 `unlock-keychain`；`codesign` 还要求钥匙串在搜索列表里，
+  且**每次都要重跑 `set-key-partition-list`**，否则即使 `find-identity`
+  看得到身份，`codesign` 仍报 `errSecInternalComponent`。
+* `set -e` 下 `VAR=$(可能失败的命令)` 会**直接退出脚本**，后面的错误提示和
+  ad-hoc 回退都不会执行。要把命令放进 `if VAR=$(...); then` 的条件里。
 
 ---
 
