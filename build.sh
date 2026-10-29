@@ -5,14 +5,27 @@ set -e
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$PROJECT_DIR/dist/LyricFeverDirect.app"
 CONTENTS="$APP_DIR/Contents"
+
+# Build intermediates live on the system volume by default: SwiftPM and
+# iconutil create (and delete) temp directories next to their output, and on
+# an external volume that cleanup can be blocked. Set TMPDIR too so nothing
+# spills onto /Volumes.
+BUILD_DIR="${LYRIC_FEVER_BUILD_DIR:-$HOME/.cache/LyricFeverDirect}"
+mkdir -p "$BUILD_DIR"
+export TMPDIR="${TMPDIR:-/var/folders/tmp-lfd}"
+mkdir -p "$TMPDIR" 2>/dev/null || TMPDIR=/tmp
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 
 echo "==> 编译 (release)"
 cd "$PROJECT_DIR"
-swift build -c release 2>&1 | tail -20
+# Where SwiftPM keeps intermediates. Overridable because building on an
+# external volume occasionally cannot clear SwiftPM's own temp directories
+# under /Volumes — pointing the scratch path elsewhere works around it.
+SCRATCH="${LYRIC_FEVER_SCRATCH:-$BUILD_DIR/swiftpm}"
+swift build -c release --scratch-path "$SCRATCH" 2>&1 | tail -20
 
-BIN="$(swift build -c release --show-bin-path)/LyricFeverDirectApp"
+BIN="$(swift build -c release --scratch-path "$SCRATCH" --show-bin-path)/LyricFeverDirectApp"
 if [ ! -f "$BIN" ]; then
     echo "!! 找不到可执行文件: $BIN"
     exit 1
@@ -24,8 +37,8 @@ echo "==> 自检歌词匹配规则"
 # test bundle cannot even be launched. This self-check compiles the matching
 # rules standalone and runs on every build, which is what actually keeps the
 # "wrong song's lyrics" bug from coming back.
-VERIFY_BIN="$PROJECT_DIR/.build/verify_match"
-VERIFY_LOG="$PROJECT_DIR/.build/verify_build.log"
+VERIFY_BIN="$BUILD_DIR/verify_match"
+VERIFY_LOG="$BUILD_DIR/verify_build.log"
 if swiftc -O "$PROJECT_DIR/Sources/AppleMusicBridge/LyricMatch.swift" \
         "$PROJECT_DIR/tools/verify_match.swift" \
         -o "$VERIFY_BIN" >"$VERIFY_LOG" 2>&1; then
@@ -41,20 +54,20 @@ else
 fi
 
 echo "==> 生成图标"
-ICONSET="$PROJECT_DIR/.build/AppIcon.iconset"
+ICONSET="$BUILD_DIR/AppIcon.iconset"
 rm -rf "$ICONSET"
-if [ ! -f "$PROJECT_DIR/.build/make_icon" ] || [ "$PROJECT_DIR/tools/make_icon.swift" -nt "$PROJECT_DIR/.build/make_icon" ]; then
-    swiftc -O "$PROJECT_DIR/tools/make_icon.swift" -o "$PROJECT_DIR/.build/make_icon"
+if [ ! -f "$BUILD_DIR/make_icon" ] || [ "$PROJECT_DIR/tools/make_icon.swift" -nt "$BUILD_DIR/make_icon" ]; then
+    swiftc -O "$PROJECT_DIR/tools/make_icon.swift" -o "$BUILD_DIR/make_icon"
 fi
-"$PROJECT_DIR/.build/make_icon" "$ICONSET"
+"$BUILD_DIR/make_icon" "$ICONSET"
 rm -f "$APP_DIR/Contents/Resources/AppIcon.icns"
-iconutil -c icns "$ICONSET" -o "$PROJECT_DIR/.build/AppIcon.icns"
+iconutil -c icns "$ICONSET" -o "$BUILD_DIR/AppIcon.icns"
 
 echo "==> 组装 .app"
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS" "$RESOURCES"
 cp "$BIN" "$MACOS/LyricFeverDirectApp"
-cp "$PROJECT_DIR/.build/AppIcon.icns" "$RESOURCES/AppIcon.icns"
+cp "$BUILD_DIR/AppIcon.icns" "$RESOURCES/AppIcon.icns"
 chmod +x "$MACOS/LyricFeverDirectApp"
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'
