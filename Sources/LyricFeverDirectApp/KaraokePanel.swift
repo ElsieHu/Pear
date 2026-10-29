@@ -68,7 +68,7 @@ final class KaraokePanel: NSPanel {
         // new width before any animation could run, so `refit` found nothing
         // left to animate. A plain container has no intrinsic size, which
         // hands size control back to `refit`.
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 56))
+        let container = PillContainerView(frame: NSRect(x: 0, y: 0, width: 420, height: 56))
         // The pill proper: background, rounded corners and shadow. It is
         // inset inside the window because a shadow drawn outside the content
         // view is simply clipped away by the window edge — so the window has
@@ -86,6 +86,7 @@ final class KaraokePanel: NSPanel {
         pill.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(pill)
         self.pill = pill
+        container.pill = pill
 
         let chrome = NSView(frame: pill.bounds)
         chrome.wantsLayer = true
@@ -376,4 +377,19 @@ final class KaraokePanel: NSPanel {
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+}
+
+/// The window's content view, which is larger than the pill whenever a shadow
+/// is on — the shadow has to fall somewhere.
+///
+/// That ring of transparent window is invisible but still hit-testable, so
+/// without this it swallows clicks meant for whatever sits underneath. Clicks
+/// are only accepted inside the pill; everything else falls through.
+private final class PillContainerView: NSView {
+    weak var pill: NSView?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let pill, pill.frame.contains(point) else { return nil }
+        return super.hitTest(point)
+    }
 }
