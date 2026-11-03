@@ -17,6 +17,29 @@ mkdir -p "$TMPDIR" 2>/dev/null || TMPDIR=/tmp
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 
+# ---- SDK compatibility ----
+# Some Command Line Tools releases (SDK 27+) declare SwiftUI's @State as a
+# macro, but ship no SwiftUIMacros plugin. Then *every* SwiftUI file fails to
+# compile with "external macro implementation type ... not found" (and a
+# cascade of misleading "self is immutable" errors). Prefer the last SDK where
+# @State is still a property wrapper when one is installed.
+# Override with LYRIC_FEVER_SDK=/path/to/SDK, or LYRIC_FEVER_SDK=default to
+# force the system default (e.g. when using a full Xcode toolchain).
+SDK_DIR="${LYRIC_FEVER_SDK:-}"
+if [ -z "$SDK_DIR" ]; then
+    CLT_SDKS="/Library/Developer/CommandLineTools/SDKs"
+    for candidate in MacOSX26.5.sdk MacOSX26.sdk; do
+        if [ -d "$CLT_SDKS/$candidate" ]; then
+            SDK_DIR="$CLT_SDKS/$candidate"
+            break
+        fi
+    done
+fi
+if [ -n "$SDK_DIR" ] && [ "$SDK_DIR" != "default" ] && [ -d "$SDK_DIR" ]; then
+    export SDKROOT="$SDK_DIR"
+    echo "==> 使用 SDK: $SDK_DIR (绕开 SwiftUIMacros 插件缺失)"
+fi
+
 echo "==> 编译 (release)"
 cd "$PROJECT_DIR"
 # Where SwiftPM keeps intermediates. Overridable because building on an

@@ -61,10 +61,13 @@ final class StatusBarController {
         guard let button = statusItem.button else { return }
         let choice = state.menuBarDisplay
         let track = state.monitor.track
+        let label = choice.label(title: track?.title, artist: track?.artist)
 
-        // All three switched off would leave an invisible, unclickable status
-        // item — the app would have no entry point. The icon is the floor.
-        let useIcon = choice.showsIcon || choice.isEffectivelyEmpty
+        // The icon is the floor. Whenever there is no text to render — no
+        // track (Music not running / nothing playing), empty fields, or a
+        // text-only configuration with nothing to show — keep the item
+        // visible and clickable so Settings is always reachable.
+        let useIcon = choice.showsIcon || label.isEmpty
         if useIcon {
             if button.image == nil {
                 let image = NSImage(systemSymbolName: "music.note",
@@ -76,7 +79,7 @@ final class StatusBarController {
             button.image = nil
         }
         button.imagePosition = useIcon ? .imageLeading : .noImage
-        button.title = choice.label(title: track?.title, artist: track?.artist)
+        button.title = label
 
         if let track {
             button.toolTip = "《\(track.title)》- \(track.artist)"

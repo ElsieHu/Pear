@@ -308,14 +308,14 @@ final class AppState: ObservableObject {
 
     var panelContent: PanelContent {
         guard windowEnabled else { return .hidden }
+        // No current track means the Music app isn't running / nothing is
+        // playing. The pill must stay out of the way in that case — status
+        // messages belong in the menu-bar panel (which has a dedicated
+        // "allow Automation" row and the diagnostic log), not in a floating
+        // window that pops up on every launch with no music.
+        guard monitor.track != nil else { return .hidden }
         if lyrics != nil { return .lyrics }
         if isFetching { return .loading }
-        if let err = lastError {
-            return .idle(err)
-        }
-        guard monitor.track != nil else {
-            return .idle("需要允许控制“音乐”：系统设置 ▸ 隐私与安全性 ▸ 自动化")
-        }
         if let err = lastError { return .idle(err) }
         return .idle("正在等待 Apple Music 写入歌词…")
     }

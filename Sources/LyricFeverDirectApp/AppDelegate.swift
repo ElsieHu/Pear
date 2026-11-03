@@ -11,7 +11,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let panel = KaraokePanel(state: state)
         karaokePanel = panel
-        panel.orderFrontRegardless()
+        // Visibility is decided by KaraokePanel.tick() from panelContent:
+        // the pill only appears once there is a track (and lyrics) to show.
+        // Showing it here would make it flash at launch with no music playing.
 
         statusBar = StatusBarController(state: state, panel: panel)
 
