@@ -32,6 +32,16 @@ struct LyricAppearance: Codable, Equatable {
     /// itself always follows the pill's corner radius on all four sides; this
     /// knob only controls how strong it is.
     var shadowIntensity: Double = 0.30
+
+    /// Blur radius of the pill's soft shadow, shared by the real window and
+    /// the settings preview so the two always match. Kept small deliberately:
+    /// Core Animation's blur reaches roughly 3× this radius, and a halo wider
+    /// than the transparent window margin gets clipped by the window's
+    /// *rectangular* edge — that clip is what made the shadow turn square.
+    static let shadowBlurRadius: CGFloat = 9
+    /// Transparent margin reserved around the pill for that shadow. Must stay
+    /// larger than ~3 × `shadowBlurRadius` plus the 1pt offset.
+    static let shadowRoom: CGFloat = 30
     var hideOnHover: Bool = false
     var lockPosition: Bool = false
     var clickThrough: Bool = false
@@ -210,23 +220,27 @@ extension Color {
 // MARK: - Presets
 
 extension LyricAppearance {
+    /// Eight two-colour contrast pairs supplied by the user (Nov 3). Each
+    /// entry is a background + lyric colour that can be flipped with the
+    /// "交换背景色与歌词颜色" button — the pairing matters, not a fixed
+    /// foreground/background assignment.
     static let presets: [(name: String, appearance: LyricAppearance)] = {
-        func make(_ name: String, bg: String, fg: String = "#FFFFFF", hi: String? = nil) -> (String, LyricAppearance) {
+        func pair(_ name: String, _ bg: String, _ fg: String) -> (String, LyricAppearance) {
             var a = LyricAppearance()
             a.backgroundColorHex = bg
             a.textColorHex = fg
-            a.highlightColorHex = hi ?? fg
+            a.highlightColorHex = fg
             return (name, a)
         }
         return [
-            make("霓虹紫", bg: "#6E44FF"),
-            make("莓果粉", bg: "#E0407F"),
-            make("深海蓝", bg: "#1E5AFF"),
-            make("薄荷青", bg: "#12A594"),
-            make("曜石黑", bg: "#101014"),
-            make("云雾白", bg: "#FFFFFF", fg: "#1C1C1E"),
-            make("落日橙", bg: "#F0642F"),
-            make("森野绿", bg: "#2E9E5B")
+            pair("浆果红 × 湖蓝色", "#65020A", "#18D5E7"),
+            pair("胭脂粉 × 墨黑色", "#FF7CA2", "#000000"),
+            pair("雾堇紫 × 樱粉色", "#615EDE", "#FF7EC1"),
+            pair("长春花蓝 × 可可棕", "#7B8AD7", "#6D483B"),
+            pair("裸桃粉 × 苔青色", "#FACBC6", "#465C47"),
+            pair("桃绯粉 × 薄荷青", "#F35B83", "#8AEED1"),
+            pair("浅松色 × 艾草青", "#FFC44F", "#5ECD8C"),
+            pair("柿橙色 × 密金色", "#B85516", "#EAAE35")
         ]
     }()
 }

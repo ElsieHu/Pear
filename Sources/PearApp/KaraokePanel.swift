@@ -26,10 +26,14 @@ final class KaraokePanel: NSPanel {
     /// needed when there is a shadow: with it off, an inset would just be a
     /// ring of invisible window swallowing clicks that belong to whatever is
     /// underneath.
-    private static let shadowInset: CGFloat = 24
-
+    ///
+    /// The margin has to *contain* the whole blur (roughly 3 × radius). When
+    /// the blur was 22pt and the margin only 24pt, the outer part of the halo
+    /// was cut off by the window's rectangular edge — a straight, square
+    /// boundary, exactly the artefact reported. Radius 9 / margin 30 leaves
+    /// the whole halo intact and makes it much tighter around the pill.
     private var shadowRoom: CGFloat {
-        state.effectiveAppearance.shadowEnabled ? Self.shadowInset : 0
+        state.effectiveAppearance.shadowEnabled ? LyricAppearance.shadowRoom : 0
     }
 
     private var pillLeading: NSLayoutConstraint?
@@ -192,7 +196,10 @@ final class KaraokePanel: NSPanel {
         pillLayer.masksToBounds = false
         pillLayer.shadowColor = NSColor.black.cgColor
         pillLayer.shadowOpacity = ap.shadowEnabled ? Float(ap.shadowIntensity) : 0
-        pillLayer.shadowRadius = 22
+        // Keep the blur comfortably inside `shadowRoom`; otherwise the
+        // window's rectangular edge clips it into a square halo.
+        pillLayer.shadowRadius = min(LyricAppearance.shadowBlurRadius,
+                                     LyricAppearance.shadowRoom / 3)
         // AppKit measures the offset upwards; -1 is a barely-there downward
         // bias, so the shadow still reads as a halo rather than a bar.
         pillLayer.shadowOffset = CGSize(width: 0, height: -1)
@@ -204,9 +211,10 @@ final class KaraokePanel: NSPanel {
         pillTrailing?.constant = -shadowRoom
         pillBottom?.constant = -shadowRoom
 
-        let msg = String(format: "外壳 圆角=%.0f 阴影=%@ 强度=%.2f 不透明度=%.2f 留白=%.0f",
+        let msg = String(format: "外壳 圆角=%.0f 阴影=%@ 强度=%.2f 模糊=%.0f 不透明度=%.2f 留白=%.0f",
                          ap.cornerRadius, ap.shadowEnabled ? "开" : "关",
-                         ap.shadowIntensity, pillLayer.shadowOpacity, shadowRoom)
+                         ap.shadowIntensity, pillLayer.shadowRadius,
+                         pillLayer.shadowOpacity, shadowRoom)
         guard msg != lastChromeLog else { return }
         lastChromeLog = msg
         AppLog.info(msg)

@@ -439,5 +439,26 @@ final class AppState: ObservableObject {
         updated.colorModeRaw = "manual"
         appearance = updated
     }
+
+    /// Flip the two halves of a manual colour pair: background becomes the
+    /// lyric colour and vice versa. The highlight follows the lyric colour
+    /// whenever it was tracking it, so a preset keeps its two-colour look;
+    /// a separately customised highlight colour is left alone.
+    func swapManualColors() {
+        var updated = appearance
+        let oldBackground = updated.backgroundColorHex
+        let oldText = updated.textColorHex
+        let oldHighlight = updated.highlightColorHex
+
+        updated.backgroundColorHex = oldText
+        updated.textColorHex = oldBackground
+        if oldHighlight == oldText {
+            updated.highlightColorHex = oldBackground
+        } else if oldHighlight == oldBackground {
+            updated.highlightColorHex = oldText
+        }
+        updated.colorModeRaw = "manual"
+        appearance = updated
+    }
 }
 

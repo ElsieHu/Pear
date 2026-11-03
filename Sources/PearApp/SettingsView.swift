@@ -5,38 +5,40 @@ import AppleMusicBridge
 
 /// Preferences window.
 ///
-/// Layout rule from the user: the live pill preview stays **pinned at the top**
-/// and never scrolls away, while the actual knobs are grouped into tabs below
-/// it. That way every change is visible in the preview without scrolling.
-///
-/// Performance notes (scroll stutter was reported here):
-/// - No `ScrollView` wrapper around `Form`: `Form` already scrolls.
-/// - No direct reads of `monitor.smoothPosition` in the tab bodies; live
-///   values live inside a `TimelineView` so only that row invalidates.
-/// - `AppleMusicMonitor` publishes only on real changes, so we no longer
-///   re-render 4×/sec for free.
+/// Layout rules (Nov 3 feedback):
+/// - **One continuous background.** The tinted preview header, the system
+///   `TabView` grey band and the inset `Form` cards used to stack three
+///   different grey shades on top of each other — that was the "分层" look.
+///   Everything now sits on the window's own background; the only separator
+///   is a single hairline under a self-drawn, flat tab strip.
+/// - **No small caption-style explanations.** Explanatory text was scattered
+///   under every section at `.caption` / `.caption2` size. The current state
+///   values that actually matter (font size, radius, offset, …) are kept, but
+///   shown at body size on the same line as their label.
 struct SettingsView: View {
     @ObservedObject private var state = AppState.shared
+    @State private var selectedTab: SettingsTab = .color
+
+    private enum SettingsTab: String, CaseIterable, Identifiable {
+        case color = "配色"
+        case text = "文字"
+        case shape = "外形"
+        case behaviour = "行为"
+        case menuBar = "菜单栏"
+        case status = "状态"
+        var id: String { rawValue }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             previewHeader
+            tabStrip
             Divider()
-            TabView {
-                colorTab
-                    .tabItem { Label("配色", systemImage: "paintpalette") }
-                textTab
-                    .tabItem { Label("文字", systemImage: "textformat.size") }
-                shapeTab
-                    .tabItem { Label("外形", systemImage: "rectangle.roundedtop") }
-                behaviourTab
-                    .tabItem { Label("行为", systemImage: "slider.horizontal.3") }
-                menuBarTab
-                    .tabItem { Label("菜单栏", systemImage: "menubar.rectangle") }
-                statusTab
-                    .tabItem { Label("状态", systemImage: "info.circle") }
-            }
+            page
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        // Match the NSWindow's own background so there is no second layer.
+        .background(Color(NSColor.windowBackgroundColor))
         // Keep this in sync with the manually-created NSWindow in
         // StatusBarController.openSettings(); a narrower window clips the
         // pinned preview horizontally.
@@ -46,45 +48,86 @@ struct SettingsView: View {
     // MARK: - Pinned preview
 
     private var previewHeader: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Text("当前浮窗")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("改动即时生效")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
+        VStack(alignment: .leading, spacing: 8) {
+            Text("当前浮窗")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
             PreviewPill()
-                .frame(maxWidth: .infinity, minHeight: 62)
+                .frame(maxWidth: .infinity, minHeight: 62, alignment: .center)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-        .background(Color(NSColor.controlBackgroundColor))
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        // Room for the halo so it never touches the tab strip.
+        .padding(.bottom, 20)
+    }
+
+    // MARK: - Flat tab strip
+    //
+    // A native TabView draws its own grey band across the window. That band
+    // plus the form's lighter background read as two stacked slabs, so draw
+    // the tabs as plain buttons on the shared background instead.
+
+    private var tabStrip: some View {
+        HStack(spacing: 2) {
+            ForEach(SettingsTab.allCases) { tab in
+                Button {
+                    selectedTab = tab
+                } label: {
+                    Text(tab.rawValue)
+                        .font(.body)
+                        .foregroundStyle(selectedTab == tab
+                                         ? Color(NSColor.controlAccentColor)
+                                         : Color(NSColor.secondaryLabelColor))
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(selectedTab == tab
+                                      ? Color(NSColor.controlAccentColor).opacity(0.16)
+                                      : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 5)
+    }
+
+    @ViewBuilder
+    private var page: some View {
+        switch selectedTab {
+        case .color: colorTab
+        case .text: textTab
+        case .shape: shapeTab
+        case .behaviour: behaviourTab
+        case .menuBar: menuBarTab
+        case .status: statusTab
+        }
     }
 
     // MARK: - Colour
 
     private var colorTab: some View {
-        Form {
-            Section("配色来源") {
-                Picker("来源", selection: $state.appearance.colorModeRaw) {
-                    Text("专辑配色").tag("album")
-                    Text("封面取色").tag("artwork")
-                    Text("手动").tag("manual")
+        SettingsPage {
+            SettingsSection("配色来源") {
+                SettingsRow("来源") {
+                    Picker("", selection: $state.appearance.colorModeRaw) {
+                        Text("专辑配色").tag("album")
+                        Text("封面取色").tag("artwork")
+                        Text("手动").tag("manual")
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 240)
                 }
-                .pickerStyle(.segmented)
 
-                Text(modeHint)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                // Only meaningful for the automatic modes: in manual mode
-                // `effective()` returns the user's colours untouched.
                 if state.appearance.colorModeRaw != "manual" {
-                    Toggle("封面过亮时自动压暗(保证可读)",
-                           isOn: $state.appearance.autoDarkenLightBackgrounds)
+                    SettingsRow("封面过亮时自动压暗(保证可读)") {
+                        Toggle("", isOn: $state.appearance.autoDarkenLightBackgrounds)
+                            .labelsHidden()
+                    }
                 }
             }
 
@@ -92,254 +135,316 @@ struct SettingsView: View {
             // showing manual swatches while album/artwork colours are active
             // was confusing (they had no effect).
             if state.appearance.colorModeRaw == "manual" {
-                Section("手动配色预设") {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 8) {
+                SettingsSection("手动配色预设") {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
+                              spacing: 10) {
                         ForEach(LyricAppearance.presets, id: \.name) { preset in
                             Button {
                                 // applyPreset owns the mode switch, so a single
                                 // assignment triggers one persist (no double didSet).
                                 state.applyPreset(preset.appearance)
                             } label: {
-                                VStack(spacing: 3) {
-                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                        .fill(Color(hex: preset.appearance.backgroundColorHex) ?? .purple)
-                                        .frame(height: 26)
-                                        .overlay(
-                                            Text("词")
-                                                .font(.system(size: 12, weight: .bold))
-                                                .foregroundColor(Color(hex: preset.appearance.textColorHex) ?? .white)
-                                        )
+                                VStack(spacing: 6) {
+                                    // Both orientations of the pair at once —
+                                    // the swap button flips the live colours.
+                                    HStack(spacing: 0) {
+                                        presetHalf(background: preset.appearance.backgroundColorHex,
+                                                   foreground: preset.appearance.textColorHex)
+                                        presetHalf(background: preset.appearance.textColorHex,
+                                                   foreground: preset.appearance.backgroundColorHex)
+                                    }
+                                    .frame(height: 28)
+                                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                                     Text(preset.name)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
                                 }
                             }
                             .buttonStyle(.plain)
                         }
                     }
                     // Fixed height: an unconstrained LazyVGrid inside a
-                    // scrolling Form re-measures on every pass and stutters.
-                    .frame(height: 82)
+                    // scrolling page re-measures on every pass and stutters.
+                    .frame(height: 232)
+
+                    HStack {
+                        Spacer()
+                        Button {
+                            state.swapManualColors()
+                        } label: {
+                            Text("⇄ 交换背景色与歌词颜色").font(.body)
+                        }
+                        .buttonStyle(.bordered)
+                        Spacer()
+                    }
                 }
 
-                Section("手动颜色") {
+                SettingsSection("手动颜色") {
                     ColorPicker("歌词底色(未唱到)", selection: colorBinding(\.textColorHex))
                     ColorPicker("高亮色(已唱到)", selection: colorBinding(\.highlightColorHex))
                     ColorPicker("浮窗背景", selection: colorBinding(\.backgroundColorHex))
-                    Slider(value: $state.appearance.dimOpacity, in: 0.1...1.0, step: 0.05) {
-                        Text("未唱部分不透明度")
-                    }
-                    Text("\(Int(state.appearance.dimOpacity * 100))%　(调低会让扫光对比更明显)")
-                        .font(.caption).foregroundStyle(.secondary)
+                    SettingsSlider(title: "未唱部分不透明度",
+                                   value: "\(Int(state.appearance.dimOpacity * 100))%",
+                                   binding: $state.appearance.dimOpacity,
+                                   range: 0.1...1.0, step: 0.05)
                 }
             }
         }
-        .formStyle(.grouped)
     }
 
-    private var modeHint: String {
-        switch state.appearance.colorModeRaw {
-        case "album":
-            return "使用 Apple 为专辑封面计算的 bgColor / textColor1 配色，离线即时生效。"
-        case "artwork":
-            return "下载封面图并提取主色(需联网)，明暗对比由程序保证。"
-        default:
-            return "使用下方手动指定的颜色，可先挑一个预设再微调。"
+    private func presetHalf(background: String, foreground: String) -> some View {
+        ZStack {
+            Rectangle().fill(Color(hex: background) ?? .gray)
+            Text("词")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(Color(hex: foreground) ?? .white)
         }
     }
 
     // MARK: - Text
 
     private var textTab: some View {
-        Form {
-            Section("文字") {
-                Picker("字体", selection: $state.appearance.fontName) {
-                    Text("系统字体").tag("")
-                    Divider()
-                    ForEach(Self.fontFamilies, id: \.self) { name in
-                        Text(name).tag(name)
+        SettingsPage {
+            SettingsSection("文字") {
+                SettingsRow("字体") {
+                    Picker("", selection: $state.appearance.fontName) {
+                        Text("系统字体").tag("")
+                        Divider()
+                        ForEach(Self.fontFamilies, id: \.self) { name in
+                            Text(name).tag(name)
+                        }
                     }
+                    .labelsHidden()
+                    .frame(maxWidth: 220)
                 }
 
-                Picker("字重", selection: $state.appearance.fontWeightRaw) {
-                    Text("常规").tag("regular")
-                    Text("中等").tag("medium")
-                    Text("半粗").tag("semibold")
-                    Text("粗体").tag("bold")
-                    Text("特粗").tag("heavy")
+                SettingsRow("字重") {
+                    Picker("", selection: $state.appearance.fontWeightRaw) {
+                        Text("常规").tag("regular")
+                        Text("中等").tag("medium")
+                        Text("半粗").tag("semibold")
+                        Text("粗体").tag("bold")
+                        Text("特粗").tag("heavy")
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 140)
                 }
 
-                Slider(value: $state.appearance.fontSize, in: 12...64, step: 1) {
-                    Text("字号")
-                } minimumValueLabel: {
-                    Text("12")
-                } maximumValueLabel: {
-                    Text("64")
-                }
-                Text("当前: \(Int(state.appearance.fontSize)) pt")
-                    .font(.caption).foregroundStyle(.secondary)
+                SettingsSlider(title: "字号",
+                               value: "\(Int(state.appearance.fontSize)) pt",
+                               binding: $state.appearance.fontSize,
+                               range: 12...64, step: 1)
 
-                Picker("对齐", selection: $state.appearance.textAlignmentRaw) {
-                    Text("左").tag("leading")
-                    Text("中").tag("center")
-                    Text("右").tag("trailing")
+                SettingsRow("对齐") {
+                    Picker("", selection: $state.appearance.textAlignmentRaw) {
+                        Text("左").tag("leading")
+                        Text("中").tag("center")
+                        Text("右").tag("trailing")
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 180)
                 }
-                .pickerStyle(.segmented)
             }
         }
-        .formStyle(.grouped)
     }
 
     // MARK: - Shape & shadow
 
     private var shapeTab: some View {
-        Form {
-            Section("外形") {
-                Slider(value: $state.appearance.backgroundOpacity, in: 0...1, step: 0.02) {
-                    Text("背景不透明度")
-                }
-                Slider(value: $state.appearance.cornerRadius, in: 0...30, step: 1) {
-                    Text("圆角")
-                }
-                Slider(value: $state.appearance.horizontalPadding, in: 4...60, step: 1) {
-                    Text("左右内边距")
-                }
-                Slider(value: $state.appearance.verticalPadding, in: 2...40, step: 1) {
-                    Text("上下内边距")
-                }
-                Slider(value: $state.appearance.maxWidth, in: 240...1400, step: 20) {
-                    Text("最大宽度")
-                }
+        SettingsPage {
+            SettingsSection("外形") {
+                SettingsSlider(title: "背景不透明度",
+                               value: "\(Int(state.appearance.backgroundOpacity * 100))%",
+                               binding: $state.appearance.backgroundOpacity,
+                               range: 0...1, step: 0.02)
+                SettingsSlider(title: "圆角",
+                               value: "\(Int(state.appearance.cornerRadius)) pt",
+                               binding: $state.appearance.cornerRadius,
+                               range: 0...30, step: 1)
+                SettingsSlider(title: "左右内边距",
+                               value: "\(Int(state.appearance.horizontalPadding)) pt",
+                               binding: $state.appearance.horizontalPadding,
+                               range: 4...60, step: 1)
+                SettingsSlider(title: "上下内边距",
+                               value: "\(Int(state.appearance.verticalPadding)) pt",
+                               binding: $state.appearance.verticalPadding,
+                               range: 2...40, step: 1)
+                SettingsSlider(title: "最大宽度",
+                               value: "\(Int(state.appearance.maxWidth)) pt",
+                               binding: $state.appearance.maxWidth,
+                               range: 240...1400, step: 20)
             }
 
-            Section("投影") {
-                Toggle("投影", isOn: $state.appearance.shadowEnabled)
+            SettingsSection("投影") {
+                SettingsRow("投影") {
+                    Toggle("", isOn: $state.appearance.shadowEnabled)
+                        .labelsHidden()
+                }
                 if state.appearance.shadowEnabled {
-                    Slider(value: $state.appearance.shadowIntensity, in: 0...0.8, step: 0.02) {
-                        Text("阴影强度")
-                    }
-                    Text("\(Int(state.appearance.shadowIntensity * 100))%　(阴影始终跟随圆角，四周柔和环绕)")
-                        .font(.caption).foregroundStyle(.secondary)
+                    SettingsSlider(title: "阴影强度",
+                                   value: "\(Int(state.appearance.shadowIntensity * 100))%",
+                                   binding: $state.appearance.shadowIntensity,
+                                   range: 0...0.8, step: 0.02)
                 }
             }
         }
-        .formStyle(.grouped)
     }
 
     // MARK: - Behaviour
 
     private var behaviourTab: some View {
-        Form {
-            Section("显示") {
-                Toggle("显示下一句(更小更暗)", isOn: $state.appearance.showNextLine)
-                Toggle("逐字/逐行扫光高亮", isOn: $state.appearance.sweepEnabled)
-                Toggle("鼠标悬停时淡出", isOn: $state.appearance.hideOnHover)
-                Toggle("锁定位置(禁止拖动)", isOn: $state.appearance.lockPosition)
-                Toggle("点击穿透(浮窗不接收鼠标)", isOn: $state.appearance.clickThrough)
-            }
-
-            Section("歌词时间校准") {
-                Slider(value: $state.lyricTimeOffset, in: -5...5, step: 0.1) {
-                    Text("偏移")
+        SettingsPage {
+            SettingsSection("显示") {
+                SettingsRow("显示下一句(更小更暗)") {
+                    Toggle("", isOn: $state.appearance.showNextLine)
+                        .labelsHidden()
                 }
-                Text("当前：\(String(format: "%+.1f", state.lyricTimeOffset)) 秒　(+ 让歌词提前，- 让歌词延后)")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text("若歌词整体比音乐慢几秒，往 + 方向微调直到对齐。")
-                    .font(.caption2).foregroundStyle(.secondary)
-                Button("归零") { state.lyricTimeOffset = 0 }
+                SettingsRow("逐字/逐行扫光高亮") {
+                    Toggle("", isOn: $state.appearance.sweepEnabled)
+                        .labelsHidden()
+                }
+                SettingsRow("鼠标悬停时淡出") {
+                    Toggle("", isOn: $state.appearance.hideOnHover)
+                        .labelsHidden()
+                }
+                SettingsRow("锁定位置(禁止拖动)") {
+                    Toggle("", isOn: $state.appearance.lockPosition)
+                        .labelsHidden()
+                }
+                SettingsRow("点击穿透(浮窗不接收鼠标)") {
+                    Toggle("", isOn: $state.appearance.clickThrough)
+                        .labelsHidden()
+                }
             }
 
-            Section("启动") {
-                Toggle("开机时自动启动 Pear", isOn: Binding(
-                    get: { state.launchAtLogin },
-                    set: { state.setLaunchAtLogin($0) }
-                ))
-                Text("开关状态取自实际的登录项配置；变更最迟在下次登录时生效。")
-                    .font(.caption).foregroundStyle(.secondary)
+            SettingsSection("歌词时间校准") {
+                SettingsSlider(title: "偏移（+ 提前 / − 延后）",
+                               value: String(format: "%+.1f 秒", state.lyricTimeOffset),
+                               binding: $state.lyricTimeOffset,
+                               range: -5...5, step: 0.1)
+                HStack {
+                    Spacer()
+                    Button("归零") { state.lyricTimeOffset = 0 }
+                        .font(.body)
+                }
             }
 
-            Section("重置") {
-                Button("恢复默认外观") { state.resetAppearance() }
-                Button("重置浮窗位置") {
-                    NotificationCenter.default.post(name: .resetPanelPosition, object: nil)
+            SettingsSection("启动") {
+                SettingsRow("开机时自动启动 Pear") {
+                    Toggle("", isOn: Binding(
+                        get: { state.launchAtLogin },
+                        set: { state.setLaunchAtLogin($0) }
+                    ))
+                    .labelsHidden()
+                }
+            }
+
+            SettingsSection("重置") {
+                HStack(spacing: 12) {
+                    Button("恢复默认外观") { state.resetAppearance() }
+                        .font(.body)
+                    Button("重置浮窗位置") {
+                        NotificationCenter.default.post(name: .resetPanelPosition, object: nil)
+                    }
+                    .font(.body)
                 }
             }
         }
-        .formStyle(.grouped)
     }
 
     // MARK: - Menu bar
 
     private var menuBarTab: some View {
-        Form {
-            Section("菜单栏") {
-                Toggle("显示图标", isOn: $state.menuBarDisplay.showsIcon)
-                Toggle("显示歌曲名", isOn: $state.menuBarDisplay.showsTitle)
-                Toggle("显示歌手名", isOn: $state.menuBarDisplay.showsArtist)
-
-                Text(menuBarHint)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        SettingsPage {
+            SettingsSection("菜单栏") {
+                SettingsRow("显示图标") {
+                    Toggle("", isOn: $state.menuBarDisplay.showsIcon).labelsHidden()
+                }
+                SettingsRow("显示歌曲名") {
+                    Toggle("", isOn: $state.menuBarDisplay.showsTitle).labelsHidden()
+                }
+                SettingsRow("显示歌手名") {
+                    Toggle("", isOn: $state.menuBarDisplay.showsArtist).labelsHidden()
+                }
+                SettingsRow("当前显示") {
+                    Text(menuBarPreview)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
-        .formStyle(.grouped)
     }
 
-    private var menuBarHint: String {
+    private var menuBarPreview: String {
         let d = state.menuBarDisplay
-        if d.isEffectivelyEmpty {
-            return "至少要留一项，否则菜单栏入口会消失 —— 已自动保留图标。"
-        }
+        if d.isEffectivelyEmpty { return "♪" }
         let preview = d.label(title: state.monitor.track?.title ?? "歌曲名",
                               artist: state.monitor.track?.artist ?? "歌手名")
         let iconPart = d.showsIcon ? "♪ " : ""
-        return "当前：\(iconPart)\(preview)　(过长会自动截断)"
+        return iconPart + (preview.isEmpty ? "♪" : preview)
     }
 
     // MARK: - Status
 
     private var statusTab: some View {
-        Form {
-            Section("状态") {
+        SettingsPage {
+            SettingsSection("状态") {
                 if let t = state.monitor.track {
-                    LabeledContent("曲目", value: t.title)
-                    LabeledContent("艺人", value: t.artist)
+                    SettingsRow("曲目") {
+                        Text(t.title).font(.body).lineLimit(1)
+                    }
+                    SettingsRow("艺人") {
+                        Text(t.artist).font(.body).lineLimit(1)
+                    }
                 } else {
-                    Text("未在“音乐”中播放").foregroundStyle(.secondary)
+                    Text("未在「音乐」中播放")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
                 }
 
                 if state.isFetching {
-                    LabeledContent("歌词", value: "读取中…")
+                    SettingsRow("歌词") { Text("读取中…").font(.body) }
                 } else if let lyrics = state.lyrics {
-                    LabeledContent("歌词来源", value: lyrics.source)
-                    LabeledContent("行数", value: "\(lyrics.lines.count)")
-                    LabeledContent("时间轴", value: lyrics.hasWordTiming ? "逐字" : "逐行")
+                    SettingsRow("歌词来源") { Text(lyrics.source).font(.body) }
+                    SettingsRow("行数") { Text("\(lyrics.lines.count)").font(.body) }
+                    SettingsRow("时间轴") {
+                        Text(lyrics.hasWordTiming ? "逐字" : "逐行").font(.body)
+                    }
                 } else if let err = state.lastError {
-                    Text(err).foregroundStyle(.orange).font(.caption)
+                    Text(err).font(.body).foregroundStyle(.orange)
                 }
 
                 // Live values isolated in a TimelineView so the rest of the
-                // form is not invalidated on every playback tick.
+                // page is not invalidated on every playback tick.
                 TimelineView(.periodic(from: .now, by: 0.5)) { _ in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("播放进度 \(String(format: "%.1f", state.monitor.smoothPosition)) 秒")
-                        Text("歌词时间 \(String(format: "%.1f", max(0, state.monitor.smoothPosition + state.lyricTimeOffset))) 秒 (含校准)")
+                    VStack(alignment: .leading, spacing: 10) {
+                        SettingsRow("播放进度") {
+                            Text(String(format: "%.1f 秒", state.monitor.smoothPosition))
+                                .monospacedDigit().font(.body)
+                        }
+                        SettingsRow("歌词时间(含校准)") {
+                            Text(String(format: "%.1f 秒",
+                                        max(0, state.monitor.smoothPosition + state.lyricTimeOffset)))
+                                .monospacedDigit().font(.body)
+                        }
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 }
 
-                Button("重新获取歌词") { state.retry() }
-                Button("打开「自动化」隐私设置") {
-                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
-                        NSWorkspace.shared.open(url)
+                HStack(spacing: 12) {
+                    Button("重新获取歌词") { state.retry() }
+                        .font(.body)
+                    Button("打开「自动化」隐私设置") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
+                            NSWorkspace.shared.open(url)
+                        }
                     }
+                    .font(.body)
                 }
-                Text("首次运行需在「自动化」里允许本应用控制“音乐”。")
-                    .font(.caption2).foregroundStyle(.secondary)
             }
         }
-        .formStyle(.grouped)
     }
 
     // MARK: - Helpers
@@ -356,23 +461,121 @@ struct SettingsView: View {
     }()
 }
 
+// MARK: - Flat, reusable building blocks
+//
+// Replacing `Form` + `.formStyle(.grouped)` removes the inset cards entirely:
+// there is only one background surface from the title bar down to the last row.
+
+private struct SettingsPage<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                content
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct SettingsSection<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.headline)
+            VStack(alignment: .leading, spacing: 12) {
+                content
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SettingsRow<Control: View>: View {
+    let title: String
+    @ViewBuilder var control: Control
+
+    init(_ title: String, @ViewBuilder control: () -> Control) {
+        self.title = title
+        self.control = control()
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(title).font(.body)
+            Spacer(minLength: 8)
+            control
+        }
+        .frame(minHeight: 24)
+    }
+}
+
+/// A slider whose current value sits on the label line at **body** size —
+/// no `.caption` footnote underneath, but the number is still visible.
+private struct SettingsSlider: View {
+    let title: String
+    let value: String
+    @Binding var binding: Double
+    let range: ClosedRange<Double>
+    let step: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title).font(.body)
+                Spacer()
+                Text(value)
+                    .monospacedDigit()
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: $binding, in: range, step: step) {
+                Text("")
+            }
+            .labelsHidden()
+        }
+    }
+}
+
 /// Miniature of the real pill, so settings changes are visible immediately.
-/// It mirrors the window's soft, rounded shadow so the preview looks like the
-/// real thing rather than a flat swatch.
+/// It mirrors the window's soft, rounded shadow — including "显示下一句",
+/// which previously had no visible effect in the preview at all.
 private struct PreviewPill: View {
     @ObservedObject private var state = AppState.shared
 
     var body: some View {
         let ap = state.effectiveAppearance
-        Text("父亲写的散文诗")
-            .font(ap.font(size: min(ap.fontSize, 20)))
-            .lineLimit(1)
-            .foregroundColor(ap.textColor)
-            .padding(.horizontal, min(ap.horizontalPadding, 18))
-            .padding(.vertical, min(ap.verticalPadding, 8))
-            .background(ap.backgroundColor)
-            .clipShape(RoundedRectangle(cornerRadius: min(ap.cornerRadius, 14), style: .continuous))
-            .shadow(color: .black.opacity(ap.shadowEnabled ? ap.shadowIntensity : 0),
-                    radius: 22, x: 0, y: 1)
+        VStack(spacing: 4) {
+            Text("父亲写的散文诗")
+                .font(ap.font(size: min(ap.fontSize, 20)))
+                .lineLimit(1)
+                .foregroundColor(ap.textColor)
+            if ap.showNextLine {
+                Text("预告的下一句歌词")
+                    .font(ap.font(size: min(ap.fontSize, 20) * ap.nextLineScale))
+                    .lineLimit(1)
+                    .foregroundColor(ap.textColor.opacity(ap.dimOpacity))
+            }
+        }
+        .padding(.horizontal, min(ap.horizontalPadding, 18))
+        .padding(.vertical, min(ap.verticalPadding, 8))
+        .background(ap.backgroundColor)
+        .clipShape(RoundedRectangle(cornerRadius: min(ap.cornerRadius, 14), style: .continuous))
+        .shadow(color: .black.opacity(ap.shadowEnabled ? ap.shadowIntensity : 0),
+                radius: LyricAppearance.shadowBlurRadius, x: 0, y: 1)
     }
 }
