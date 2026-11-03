@@ -132,9 +132,15 @@ final class AppState: ObservableObject {
     // MARK: - Album artwork & colour
 
     /// Look up the current track's artwork and load it (for the menu panel).
+    /// The polling loop calls this on every tick even when the song has not
+    /// changed, so only log an actual state change — otherwise a track with
+    /// no artwork floods the log with the same warning every five seconds.
+    private var lastArtworkLog = ""
+
     private func resolveArtwork() {
         guard let track = monitor.track else {
             currentArtwork = nil
+            lastArtworkLog = ""
             ArtworkLoader.shared.load(url: nil)
             applyAutoColors()
             return
@@ -142,10 +148,15 @@ final class AppState: ObservableObject {
         let info = AppleMusicCacheLyricsSource.artworkInfo(for: track)
         currentArtwork = info
         ArtworkLoader.shared.load(url: info?.url(size: 300))
+        let msg: String
         if let info {
-            AppLog.info("封面已解析: url=\(info.url(size: 300)?.absoluteString ?? "nil") bg=\(info.bgColorHex ?? "-") fg=\(info.textColorHex ?? "-")")
+            msg = "封面已解析: url=\(info.url(size: 300)?.absoluteString ?? "nil") bg=\(info.bgColorHex ?? "-") fg=\(info.textColorHex ?? "-")"
         } else {
-            AppLog.warn("封面未找到: 《\(track.title)》- \(track.artist) [\(String(format: "%.1f", track.duration))s]")
+            msg = "封面未找到: 《\(track.title)》- \(track.artist) [\(String(format: "%.1f", track.duration))s]"
+        }
+        if msg != lastArtworkLog {
+            lastArtworkLog = msg
+            if info == nil { AppLog.warn(msg) } else { AppLog.info(msg) }
         }
         applyAutoColors()
     }
@@ -193,11 +204,12 @@ final class AppState: ObservableObject {
             }
         }
 
+        var fallbackWarning: String?
         if bg == nil {
             bg = manualBG ?? LyricAppearance.neutralBackgroundHex
             source = (source.isEmpty ? "自动取色不可用" : source)
                 + "→回退\(manualBG != nil ? "手动色" : "中性色")"
-            AppLog.warn("取色失败: \(source) mode=\(mode) 有封面=\(info != nil) 主色=\(dominant ?? "-") AppleBG=\(appleBG ?? "-") 最近失败=\(ArtworkLoader.shared.lastFailure ?? "-")")
+            fallbackWarning = "取色失败: \(source) mode=\(mode) 有封面=\(info != nil) 主色=\(dominant ?? "-") AppleBG=\(appleBG ?? "-") 最近失败=\(ArtworkLoader.shared.lastFailure ?? "-")"
         }
 
         autoBackgroundHex = bg
@@ -205,9 +217,15 @@ final class AppState: ObservableObject {
         autoTextHex = fg
 
         let msg = "配色[\(mode)] 来源=\(source) bg=\(bg ?? "-") fg=\(fg ?? "自动")"
+        // Emit both the success INFO and the fallback WARN only when the
+        // resolved palette actually changes, so a repeating poll stays quiet.
         guard msg != lastColorLog else { return }
         lastColorLog = msg
-        AppLog.info(msg)
+        if let fallbackWarning {
+            AppLog.warn(fallbackWarning)
+        } else {
+            AppLog.info(msg)
+        }
     }
 
     /// Detect track changes and (re)fetch lyrics from Apple Music.
