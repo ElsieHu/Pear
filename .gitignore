@@ -1,3 +1,4 @@
 .build/
+.bscratch/
 dist/
 .DS_Store
