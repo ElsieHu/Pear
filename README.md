@@ -163,8 +163,9 @@ cd LyricFeverDirect
 任一条不通过即中止构建。
 
 产物：`dist/LyricFeverDirect.app`；脚本默认会**自动安装**到
-`/Volumes/三星2T/Applications/LyricFeverDirect.app`（换位置用
-`LYRIC_FEVER_INSTALL_DIR=/Applications ./build.sh`）。同一块 APFS 卷上移动/复制
+`/Applications`（需要装到别处时设置 `LYRIC_FEVER_INSTALL_DIR` 环境变量，
+例如 `LYRIC_FEVER_INSTALL_DIR=/path/to/Applications ./build.sh`；
+加 `--no-install` 则只打包不安装）。同一块 APFS 卷上移动/复制
 只改目录项，签名与「自动化」授权都原样保留，**不会重新弹权限窗**。
 
 ### 首次运行需做两件事

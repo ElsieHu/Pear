@@ -156,14 +156,15 @@ fi
 echo "==> 完成: $APP_DIR"
 
 # ---- 安装到 Applications ----
-# 默认装到外置盘的 Applications（用户习惯的安装位置）。外置盘没挂载时
-# 不要连构建一起失败，只是把产物留在 dist/ 并提示。
-INSTALL_DIR="${LYRIC_FEVER_INSTALL_DIR:-/Volumes/三星2T/Applications}"
+# 默认装到标准应用目录 /Applications；可用 LYRIC_FEVER_INSTALL_DIR 覆盖到
+# 任意位置（例如外置盘）。目标目录不存在时不要连构建一起失败，只是把产物
+# 留在 dist/ 并提示。
+INSTALL_DIR="${LYRIC_FEVER_INSTALL_DIR:-/Applications}"
 if [ "$1" = "--no-install" ]; then
     echo "==> 跳过安装 (--no-install)"
 elif [ ! -d "$INSTALL_DIR" ]; then
     echo "!! 安装目录不存在：$INSTALL_DIR"
-    echo "   外置盘可能没挂载，产物留在 $APP_DIR"
+    echo "   目标目录不存在（如外置盘未挂载），产物留在 $APP_DIR"
 else
     echo "==> 安装到 $INSTALL_DIR"
     TARGET="$INSTALL_DIR/LyricFeverDirect.app"
