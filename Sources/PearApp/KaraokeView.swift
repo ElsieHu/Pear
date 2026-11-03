@@ -62,7 +62,9 @@ struct KaraokeView: View {
     private var lyricsBody: some View {
         if let lyrics = state.lyrics, !lyrics.lines.isEmpty {
             TimelineView(.periodic(from: .now, by: refreshInterval)) { _ in
-                let pos = state.monitor.smoothPosition
+                // User calibration for a constant lyric/audio offset.
+                // Positive = lyrics run earlier (they were lagging behind).
+                let pos = max(0, state.monitor.smoothPosition + state.lyricTimeOffset)
                 let idx = lyrics.activeLineIndex(at: pos) ?? 0
                 let line = lyrics.lines[idx]
                 let progress = ap.sweepEnabled ? lyrics.lineProgress(line, at: pos) : 1

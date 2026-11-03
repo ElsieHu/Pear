@@ -52,6 +52,22 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(useMusicKitAPI, forKey: "useMusicKitAPI") }
     }
 
+    /// Manual calibration for a constant lyric/audio offset, in seconds.
+    /// Positive values make the lyrics run *earlier* (use when lyrics lag
+    /// behind the music); negative values delay them.
+    @Published var lyricTimeOffset: Double = 0 {
+        didSet { UserDefaults.standard.set(lyricTimeOffset, forKey: "lyricTimeOffset") }
+    }
+
+    /// Whether Pear is registered as a login item. Read back from the actual
+    /// LaunchAgent file so the switch can never lie about the real state.
+    @Published var launchAtLogin: Bool = false
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        LaunchAgentManager.setEnabled(enabled)
+        launchAtLogin = LaunchAgentManager.isEnabled
+    }
+
     /// What the menu-bar item shows (icon / title / artist, any combination).
     @Published var menuBarDisplay: MenuBarDisplay {
         didSet { persistMenuBarDisplay() }
@@ -80,6 +96,8 @@ final class AppState: ObservableObject {
             self.appearance = LyricAppearance()
         }
         self.useMusicKitAPI = ud.bool(forKey: "useMusicKitAPI")
+        self.lyricTimeOffset = ud.double(forKey: "lyricTimeOffset")
+        self.launchAtLogin = LaunchAgentManager.isEnabled
         if let data = ud.data(forKey: "menuBarDisplay"),
            let decoded = try? JSONDecoder().decode(MenuBarDisplay.self, from: data) {
             self.menuBarDisplay = decoded

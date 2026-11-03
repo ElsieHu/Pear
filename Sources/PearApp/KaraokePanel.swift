@@ -81,7 +81,7 @@ final class KaraokePanel: NSPanel {
         // Two layers, not one: a layer that masks to its rounded bounds also
         // clips away its own shadow. So the outer one casts the shadow and
         // the inner one does the rounding and clipping.
-        let pill = NSView(frame: container.bounds)
+        let pill = PillShadowView(frame: container.bounds)
         pill.wantsLayer = true
         pill.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(pill)
@@ -181,13 +181,22 @@ final class KaraokePanel: NSPanel {
         chromeLayer.cornerRadius = CGFloat(ap.cornerRadius)
         chromeLayer.backgroundColor = NSColor(ap.backgroundColor).cgColor
         chromeLayer.masksToBounds = true
-        // Set on the layer rather than via `NSView.shadow`, which does not
-        // reliably reach a layer-backed view.
-        pillLayer.shadowOpacity = ap.shadowEnabled ? 1 : 0
-        pillLayer.shadowColor = NSColor.black.withAlphaComponent(0.28).cgColor
-        pillLayer.shadowRadius = 18
-        // AppKit measures the offset upwards; SwiftUI's `y: 8` is downwards.
-        pillLayer.shadowOffset = CGSize(width: 0, height: -8)
+
+        // The shadow used to be cast by a *rectangular* outer layer while the
+        // rounded shape lived on the inner one. The two never agreed, so all
+        // that showed was a hard, straight dark bar under the pill. Give the
+        // outer layer an explicit rounded shadowPath and keep the offset tiny:
+        // a soft halo on all four sides, only barely weighted downwards.
+        let radius = CGFloat(ap.cornerRadius)
+        (pill as? PillShadowView)?.cornerRadius = radius
+        pillLayer.masksToBounds = false
+        pillLayer.shadowColor = NSColor.black.cgColor
+        pillLayer.shadowOpacity = ap.shadowEnabled ? Float(ap.shadowIntensity) : 0
+        pillLayer.shadowRadius = 22
+        // AppKit measures the offset upwards; -1 is a barely-there downward
+        // bias, so the shadow still reads as a halo rather than a bar.
+        pillLayer.shadowOffset = CGSize(width: 0, height: -1)
+        pill.needsLayout = true   // refresh shadowPath for the current bounds
 
         // Grow or shrink the ring of empty window around the pill to match.
         pillLeading?.constant = shadowRoom
@@ -195,9 +204,9 @@ final class KaraokePanel: NSPanel {
         pillTrailing?.constant = -shadowRoom
         pillBottom?.constant = -shadowRoom
 
-        let msg = String(format: "外壳 圆角=%.0f 阴影=%@ 不透明度=%.2f 留白=%.0f",
+        let msg = String(format: "外壳 圆角=%.0f 阴影=%@ 强度=%.2f 不透明度=%.2f 留白=%.0f",
                          ap.cornerRadius, ap.shadowEnabled ? "开" : "关",
-                         pillLayer.shadowOpacity, shadowRoom)
+                         ap.shadowIntensity, pillLayer.shadowOpacity, shadowRoom)
         guard msg != lastChromeLog else { return }
         lastChromeLog = msg
         AppLog.info(msg)
@@ -391,5 +400,25 @@ private final class PillContainerView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let pill, pill.frame.contains(point) else { return nil }
         return super.hitTest(point)
+    }
+}
+
+/// Outer layer of the pill: it owns the shadow.
+///
+/// Without an explicit `shadowPath`, Core Animation derives the shadow from
+/// the layer's own rectangular bounds — that was the "dark bar under the
+/// pill" bug. Keeping the path in sync inside `layout()` makes the halo
+/// follow both the corner radius and the animated width.
+private final class PillShadowView: NSView {
+    var cornerRadius: CGFloat = 14
+
+    override func layout() {
+        super.layout()
+        guard let layer else { return }
+        let r = min(cornerRadius, min(layer.bounds.width, layer.bounds.height) / 2)
+        layer.shadowPath = CGPath(roundedRect: layer.bounds,
+                                  cornerWidth: r,
+                                  cornerHeight: r,
+                                  transform: nil)
     }
 }

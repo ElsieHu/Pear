@@ -28,6 +28,10 @@ struct LyricAppearance: Codable, Equatable {
 
     var sweepEnabled: Bool = true
     var shadowEnabled: Bool = true
+    /// Opacity of the soft, rounded drop shadow (0 = invisible). The shadow
+    /// itself always follows the pill's corner radius on all four sides; this
+    /// knob only controls how strong it is.
+    var shadowIntensity: Double = 0.30
     var hideOnHover: Bool = false
     var lockPosition: Bool = false
     var clickThrough: Bool = false
@@ -49,7 +53,7 @@ struct LyricAppearance: Codable, Equatable {
         case backgroundOpacity, cornerRadius, horizontalPadding, verticalPadding, maxWidth
         case textAlignmentRaw, dimOpacity
         case showNextLine, nextLineScale
-        case sweepEnabled, shadowEnabled, hideOnHover, lockPosition, clickThrough
+        case sweepEnabled, shadowEnabled, shadowIntensity, hideOnHover, lockPosition, clickThrough
         case colorModeRaw, autoDarkenLightBackgrounds
     }
 
@@ -85,6 +89,7 @@ struct LyricAppearance: Codable, Equatable {
         read(.nextLineScale, &a.nextLineScale)
         read(.sweepEnabled, &a.sweepEnabled)
         read(.shadowEnabled, &a.shadowEnabled)
+        read(.shadowIntensity, &a.shadowIntensity)
         read(.hideOnHover, &a.hideOnHover)
         read(.lockPosition, &a.lockPosition)
         read(.clickThrough, &a.clickThrough)

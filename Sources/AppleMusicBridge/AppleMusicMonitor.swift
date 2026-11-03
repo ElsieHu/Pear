@@ -28,6 +28,11 @@ public struct MusicSnapshot: Sendable {
     public let album: String
     public let duration: TimeInterval
     public let persistentID: String
+    /// When `position` was actually sampled inside the Music app. Must travel
+    /// with the snapshot: by the time it reaches the main actor the position
+    /// is already stale, and anchoring to `Date()` there makes every lyric
+    /// line lag by the AppleScript round-trip (a constant few-second offset).
+    public let capturedAt: Date
 }
 
 /// Talks to the Music app. Deliberately **not** an actor and **not**
@@ -79,7 +84,14 @@ public enum MusicScript {
     """
 
     static func read() -> MusicSnapshot? {
+        let started = Date()
         guard let raw = run(combined), !raw.isEmpty else { return nil }
+        // `player position` is read somewhere *inside* that osascript call.
+        // Approximate the sampling instant with the mid-point of the round
+        // trip — anchoring to the end would still leave the lyrics behind by
+        // the whole call duration.
+        let elapsed = Date().timeIntervalSince(started)
+        let capturedAt = started.addingTimeInterval(elapsed / 2)
         let parts = raw.components(separatedBy: "||")
         guard parts.count >= 7 else { return nil }
         return MusicSnapshot(state: parts[0],
@@ -88,7 +100,8 @@ public enum MusicScript {
                              artist: parts[3],
                              album: parts[4],
                              duration: Double(parts[5]) ?? 0,
-                             persistentID: parts[6])
+                             persistentID: parts[6],
+                             capturedAt: capturedAt)
     }
 
     /// The one and only snapshot source.
@@ -234,8 +247,11 @@ public final class AppleMusicMonitor: ObservableObject {
 
         // Anchors are plain state (not @Published): updating them must not
         // trigger a redraw, otherwise every observing view re-renders 1×/s.
+        // Anchor to when the position was *sampled*, not when this main-actor
+        // hop happened — otherwise the whole lyric timeline runs late by the
+        // osascript round-trip plus the hop.
         anchorPosition = s.position
-        anchorDate = Date()
+        anchorDate = s.capturedAt
 
         let wanted = playing ? 1.0 : 3.0
         if abs(wanted - pollInterval) > 0.01 {
