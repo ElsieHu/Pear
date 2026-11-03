@@ -71,7 +71,7 @@ final class StatusBarController {
         if useIcon {
             if button.image == nil {
                 let image = NSImage(systemSymbolName: "music.note",
-                                    accessibilityDescription: "歌词浮窗")
+                                    accessibilityDescription: "Pear")
                 image?.isTemplate = true
                 button.image = image
             }
@@ -84,7 +84,7 @@ final class StatusBarController {
         if let track {
             button.toolTip = "《\(track.title)》- \(track.artist)"
         } else {
-            button.toolTip = "歌词浮窗"
+            button.toolTip = "Pear"
         }
 
         // Logged on change only, so it documents what the user configured
@@ -223,7 +223,7 @@ final class StatusBarController {
                 backing: .buffered,
                 defer: false
             )
-            window.title = "歌词浮窗偏好设置"
+            window.title = "Pear 偏好设置"
             let hosting = NSHostingView(rootView: SettingsView().environmentObject(state))
             // Layer-backing removes the repaint stutter when scrolling a
             // vibrancy-backed SwiftUI Form in a non-layered window.

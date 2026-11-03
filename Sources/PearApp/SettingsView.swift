@@ -76,7 +76,8 @@ struct SettingsView: View {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 8) {
                 ForEach(LyricAppearance.presets, id: \.name) { preset in
                     Button {
-                        state.appearance.colorModeRaw = "manual"
+                        // applyPreset now owns the mode switch, so a single
+                        // assignment triggers one persist (no double didSet).
                         state.applyPreset(preset.appearance)
                     } label: {
                         VStack(spacing: 3) {

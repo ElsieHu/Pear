@@ -1,18 +1,18 @@
 #!/bin/bash
-# 编译并把 LyricFeverDirect 打包成可直接双击运行的 .app
+# 编译并把 Pear 打包成可直接双击运行的 .app
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_DIR="$PROJECT_DIR/dist/LyricFeverDirect.app"
+APP_DIR="$PROJECT_DIR/dist/Pear.app"
 CONTENTS="$APP_DIR/Contents"
 
 # Build intermediates live on the system volume by default: SwiftPM and
 # iconutil create (and delete) temp directories next to their output, and on
 # an external volume that cleanup can be blocked. Set TMPDIR too so nothing
 # spills onto /Volumes.
-BUILD_DIR="${LYRIC_FEVER_BUILD_DIR:-$HOME/.cache/LyricFeverDirect}"
+BUILD_DIR="${PEAR_BUILD_DIR:-$HOME/.cache/Pear}"
 mkdir -p "$BUILD_DIR"
-export TMPDIR="${TMPDIR:-/var/folders/tmp-lfd}"
+export TMPDIR="${TMPDIR:-/var/folders/tmp-pear}"
 mkdir -p "$TMPDIR" 2>/dev/null || TMPDIR=/tmp
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
@@ -23,9 +23,9 @@ RESOURCES="$CONTENTS/Resources"
 # compile with "external macro implementation type ... not found" (and a
 # cascade of misleading "self is immutable" errors). Prefer the last SDK where
 # @State is still a property wrapper when one is installed.
-# Override with LYRIC_FEVER_SDK=/path/to/SDK, or LYRIC_FEVER_SDK=default to
+# Override with PEAR_SDK=/path/to/SDK, or PEAR_SDK=default to
 # force the system default (e.g. when using a full Xcode toolchain).
-SDK_DIR="${LYRIC_FEVER_SDK:-}"
+SDK_DIR="${PEAR_SDK:-}"
 if [ -z "$SDK_DIR" ]; then
     CLT_SDKS="/Library/Developer/CommandLineTools/SDKs"
     for candidate in MacOSX26.5.sdk MacOSX26.sdk; do
@@ -45,10 +45,31 @@ cd "$PROJECT_DIR"
 # Where SwiftPM keeps intermediates. Overridable because building on an
 # external volume occasionally cannot clear SwiftPM's own temp directories
 # under /Volumes — pointing the scratch path elsewhere works around it.
-SCRATCH="${LYRIC_FEVER_SCRATCH:-$BUILD_DIR/swiftpm}"
-swift build -c release --scratch-path "$SCRATCH" 2>&1 | tail -20
+SCRATCH="${PEAR_SCRATCH:-$BUILD_DIR/swiftpm}"
+BUILD_LOG="$BUILD_DIR/swift_build.log"
+SANDBOX_FLAG=""
+if ! swift build -c release --scratch-path "$SCRATCH" >"$BUILD_LOG" 2>&1; then
+    # SwiftPM compiles Package.swift through sandbox-exec. Some restricted
+    # shells forbid nested sandboxing ("sandbox_apply: Operation not
+    # permitted"), which shows up as a bogus "Invalid manifest" error. Retry
+    # with SwiftPM's own sandbox disabled — still a plain local build.
+    # (BSD grep needs -E for alternation; plain `\|` silently never matches.)
+    if grep -qE "sandbox_apply|sandbox-exec" "$BUILD_LOG"; then
+        echo "    SwiftPM 清单沙箱不可用，改用 --disable-sandbox 重试"
+        SANDBOX_FLAG="--disable-sandbox"
+        if ! swift build -c release --scratch-path "$SCRATCH" $SANDBOX_FLAG \
+                >"$BUILD_LOG" 2>&1; then
+            tail -30 "$BUILD_LOG"
+            exit 1
+        fi
+    else
+        tail -30 "$BUILD_LOG"
+        exit 1
+    fi
+fi
+tail -20 "$BUILD_LOG"
 
-BIN="$(swift build -c release --scratch-path "$SCRATCH" --show-bin-path)/LyricFeverDirectApp"
+BIN="$(swift build -c release --scratch-path "$SCRATCH" $SANDBOX_FLAG --show-bin-path)/PearApp"
 if [ ! -f "$BIN" ]; then
     echo "!! 找不到可执行文件: $BIN"
     exit 1
@@ -76,6 +97,23 @@ else
     exit 1
 fi
 
+echo "==> 自检歌词时间轴(尾奏裁剪)"
+VERIFY_TIMELINE_BIN="$BUILD_DIR/verify_timeline"
+VERIFY_TIMELINE_LOG="$BUILD_DIR/verify_timeline_build.log"
+if swiftc -O "$PROJECT_DIR/Sources/LyricEngine/LyricModels.swift" \
+        "$PROJECT_DIR/Sources/LyricEngine/LyricHighlight.swift" \
+        "$PROJECT_DIR/tools/verify_timeline.swift" \
+        -o "$VERIFY_TIMELINE_BIN" >"$VERIFY_TIMELINE_LOG" 2>&1; then
+    if ! "$VERIFY_TIMELINE_BIN"; then
+        echo "    ! 时间轴自检未通过，已中止构建"
+        exit 1
+    fi
+else
+    echo "    ! 时间轴自检程序编译失败："
+    tail -5 "$VERIFY_TIMELINE_LOG"
+    exit 1
+fi
+
 echo "==> 生成图标"
 ICONSET="$BUILD_DIR/AppIcon.iconset"
 rm -rf "$ICONSET"
@@ -89,9 +127,9 @@ iconutil -c icns "$ICONSET" -o "$BUILD_DIR/AppIcon.icns"
 echo "==> 组装 .app"
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS" "$RESOURCES"
-cp "$BIN" "$MACOS/LyricFeverDirectApp"
+cp "$BIN" "$MACOS/PearApp"
 cp "$BUILD_DIR/AppIcon.icns" "$RESOURCES/AppIcon.icns"
-chmod +x "$MACOS/LyricFeverDirectApp"
+chmod +x "$MACOS/PearApp"
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -99,13 +137,13 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>LyricFeverDirect</string>
+    <string>Pear</string>
     <key>CFBundleDisplayName</key>
-    <string>歌词浮窗</string>
+    <string>Pear</string>
     <key>CFBundleIdentifier</key>
-    <string>local.lyricfeverdirect</string>
+    <string>local.pear</string>
     <key>CFBundleExecutable</key>
-    <string>LyricFeverDirectApp</string>
+    <string>PearApp</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -137,14 +175,51 @@ echo "==> 签名"
 # ad-hoc signature every rebuild produces a new cdhash, so macOS treats the
 # app as brand new and you have to re-allow “控制‘音乐’” after *every* build.
 # Signing with one stable identity means you grant it once, forever.
-KEYCHAIN="$HOME/Library/Keychains/LyricFeverDirect.keychain"
-IDENTITY="LyricFeverDirect Dev"
-# 钥匙串在会话结束后会自动锁定，必须先解锁才能看到身份。
-if [ -f "$KEYCHAIN" ]; then
-    security unlock-keychain -p lyricfever "$KEYCHAIN" >/dev/null 2>&1
+SIGN_KEYCHAIN="${PEAR_SIGN_KEYCHAIN:-}"
+SIGN_IDENTITY="${PEAR_SIGN_IDENTITY:-Pear Dev}"
+SIGN_PASSWORD="${PEAR_SIGN_PASSWORD:-pear}"
+
+# Unlock a keychain and print its first codesigning identity, if there is one.
+# Unlocking *before* querying matters: a locked keychain reports no identity,
+# which silently degrades the build to ad-hoc.
+unlock_and_find() {
+    [ -f "$1" ] || return 1
+    security unlock-keychain -p "$SIGN_PASSWORD" "$1" >/dev/null 2>&1 || true
+    local found
+    found=$(security find-identity -p codesigning "$1" 2>/dev/null \
+            | sed -n 's/.*"\([^"]*\)".*/\1/p' | head -1)
+    [ -n "$found" ] || return 1
+    printf '%s' "$found"
+}
+
+# Rather than hard-coding one keychain filename and certificate name, discover
+# whichever keychain actually holds a usable identity. Two details bite here:
+# `security create-keychain` writes `*.keychain-db` on modern macOS (so a
+# `*.keychain` glob matches nothing), and a machine upgraded from an earlier
+# build still has its previous dedicated keychain + certificate — reusing it
+# keeps the same cdhash, so the 「自动化」 authorisation survives the rename.
+if [ -n "$SIGN_KEYCHAIN" ]; then
+    if FOUND=$(unlock_and_find "$SIGN_KEYCHAIN"); then
+        SIGN_IDENTITY="$FOUND"
+    fi
+else
+    for kc in "$HOME"/Library/Keychains/Pear.keychain-db \
+              "$HOME"/Library/Keychains/Pear.keychain \
+              "$HOME"/Library/Keychains/*.keychain-db \
+              "$HOME"/Library/Keychains/*.keychain; do
+        [ -f "$kc" ] || continue
+        case "$kc" in *.sb-*) continue ;; esac   # sandbox shards, not keychains
+        FOUND=$(unlock_and_find "$kc") || continue
+        SIGN_KEYCHAIN="$kc"
+        if [ "$FOUND" != "$SIGN_IDENTITY" ]; then
+            echo "    沿用已有的开发签名身份: $FOUND  ($(basename "$kc"))"
+        fi
+        SIGN_IDENTITY="$FOUND"
+        break
+    done
 fi
 
-if security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$IDENTITY"; then
+if security find-identity -p codesigning "$SIGN_KEYCHAIN" 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
     # Two things codesign needs that are easy to miss:
     # 1. It searches the keychain *search list*, not the --keychain path, so
     #    ours has to be in the list (keep login/system too — a list with only
@@ -153,18 +228,18 @@ if security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$IDE
     #    re-applied or codesign fails with errSecInternalComponent despite the
     #    identity being visible to find-identity.
     security set-key-partition-list \
-        -S apple-tool:,apple:,codesign: -s -k lyricfever "$KEYCHAIN" >/dev/null 2>&1
+        -S apple-tool:,apple:,codesign: -s -k "$SIGN_PASSWORD" "$SIGN_KEYCHAIN" >/dev/null 2>&1
     security list-keychains -d user -s \
-        "$KEYCHAIN" \
+        "$SIGN_KEYCHAIN" \
         "$HOME/Library/Keychains/login.keychain-db" \
         /Library/Keychains/System.keychain >/dev/null 2>&1
 
     # `set -e` aborts on `VAR=$(failing command)`, so put codesign in the
     # condition instead of capturing `$?` — otherwise a failure silently
     # skips both the message and the ad-hoc fallback.
-    if SIGN_OUT=$(codesign --force --deep --sign "$IDENTITY" \
-            --keychain "$KEYCHAIN" --timestamp=none "$APP_DIR" 2>&1); then
-        echo "    已用固定身份签名：$IDENTITY  (授权只需给一次)"
+    if SIGN_OUT=$(codesign --force --deep --sign "$SIGN_IDENTITY" \
+            --keychain "$SIGN_KEYCHAIN" --timestamp=none "$APP_DIR" 2>&1); then
+        echo "    已用固定身份签名：$SIGN_IDENTITY  (授权只需给一次)"
     else
         echo "    ! 固定身份签名失败: $SIGN_OUT"
         echo "      回退 ad-hoc —— 下次重建后需重新允许“自动化”"
@@ -179,10 +254,10 @@ fi
 echo "==> 完成: $APP_DIR"
 
 # ---- 安装到 Applications ----
-# 默认装到标准应用目录 /Applications；可用 LYRIC_FEVER_INSTALL_DIR 覆盖到
+# 默认装到标准应用目录 /Applications；可用 PEAR_INSTALL_DIR 覆盖到
 # 任意位置（例如外置盘）。目标目录不存在时不要连构建一起失败，只是把产物
 # 留在 dist/ 并提示。
-INSTALL_DIR="${LYRIC_FEVER_INSTALL_DIR:-/Applications}"
+INSTALL_DIR="${PEAR_INSTALL_DIR:-/Applications}"
 if [ "$1" = "--no-install" ]; then
     echo "==> 跳过安装 (--no-install)"
 elif [ ! -d "$INSTALL_DIR" ]; then
@@ -190,8 +265,8 @@ elif [ ! -d "$INSTALL_DIR" ]; then
     echo "   目标目录不存在（如外置盘未挂载），产物留在 $APP_DIR"
 else
     echo "==> 安装到 $INSTALL_DIR"
-    TARGET="$INSTALL_DIR/LyricFeverDirect.app"
-    BIN_PATH="$TARGET/Contents/MacOS/LyricFeverDirectApp"
+    TARGET="$INSTALL_DIR/Pear.app"
+    BIN_PATH="$TARGET/Contents/MacOS/PearApp"
     WAS_RUNNING=0
     # 旧版本正在跑的话必须先退出，否则会留下指向已删除文件的僵尸进程
     if pgrep -fx "$BIN_PATH" >/dev/null 2>&1; then

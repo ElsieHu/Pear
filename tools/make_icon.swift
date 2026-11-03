@@ -2,7 +2,7 @@ import Foundation
 import CoreGraphics
 import AppKit
 
-// 生成 LyricFeverDirect 的 App 图标：
+// 生成 Pear 的 App 图标：
 // 圆角渐变方块 + 三行"歌词条"，中间一条带左→右点亮效果。
 // 用法: swiftc make_icon.swift -o make_icon && ./make_icon <输出 .iconset 目录>
 

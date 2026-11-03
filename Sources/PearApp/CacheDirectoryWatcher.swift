@@ -12,7 +12,7 @@ final class CacheDirectoryWatcher {
     private let path: String
     private let onChange: () -> Void
 
-    private let queue = DispatchQueue(label: "LyricFeverDirect.cacheWatch")
+    private let queue = DispatchQueue(label: "Pear.cacheWatch")
     private var source: DispatchSourceFileSystemObject?
     private var fd: Int32 = -1
     private var safetyTimer: DispatchSourceTimer?

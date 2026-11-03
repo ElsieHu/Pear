@@ -12,7 +12,9 @@ final class HotKeyCenter {
     var onToggleLyrics: (() -> Void)?
     var onToggleLock: (() -> Void)?
 
-    private let signature: OSType = 0x4C46444B // "LFDK"
+    /// Carbon hot-key signature. Must be a unique 4-char code so the pair of
+    /// hot keys is namespaced to this app rather than colliding globally.
+    private let signature: OSType = 0x50454152 // "PEAR"
     private var handlerRef: EventHandlerRef?
     private var registered: [UInt32: EventHotKeyRef] = [:]
     private var installed = false

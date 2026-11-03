@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct LyricFeverDirectApp: App {
+struct PearApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {

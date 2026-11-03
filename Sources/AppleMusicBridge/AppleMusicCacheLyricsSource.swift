@@ -343,7 +343,8 @@ public enum AppleMusicCacheLyricsSource {
         }
         let parsed = try TTMLParser.parse(entry.ttml,
                                           source: "Apple Music(本地缓存)",
-                                          songID: entry.songID)
+                                          songID: entry.songID,
+                                          songDuration: entry.duration > 0 ? entry.duration : nil)
         guard !parsed.lines.isEmpty else { throw CacheError.noLyrics }
         return parsed
     }

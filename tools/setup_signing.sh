@@ -12,9 +12,12 @@
 # `security` 会找不到它。
 set -e
 
-KC="$HOME/Library/Keychains/LyricFeverDirect.keychain"
-IDENTITY="LyricFeverDirect Dev"
-PW="lyricfever"
+KC="$HOME/Library/Keychains/Pear.keychain"
+# `security create-keychain` actually writes `*.keychain-db` on modern macOS;
+# handle both spellings so re-running this script always starts clean.
+KC_DB="$HOME/Library/Keychains/Pear.keychain-db"
+IDENTITY="Pear Dev"
+PW="pear"
 TMP="$(mktemp -d)"
 
 echo "==> 生成自签名证书 (仅本机开发用)"
@@ -25,19 +28,21 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 7300 \
     -addext "extendedKeyUsage=critical,codeSigning" >/dev/null 2>&1
 
 openssl pkcs12 -export -inkey "$TMP/key.pem" -in "$TMP/cert.pem" \
-    -out "$TMP/lfd.p12" -passout pass:"$PW" >/dev/null 2>&1
+    -out "$TMP/pear.p12" -passout pass:"$PW" >/dev/null 2>&1
 
 echo "==> 建立专用钥匙串"
-rm -f "$KC"
+rm -f "$KC" "$KC_DB"
 security create-keychain -p "$PW" "$KC" >/dev/null 2>&1
-security unlock-keychain -p "$PW" "$KC"
-security import "$TMP/lfd.p12" -k "$KC" -P "$PW" -T /usr/bin/codesign >/dev/null 2>&1
+[ -f "$KC_DB" ] && ACTUAL="$KC_DB" || ACTUAL="$KC"
+security unlock-keychain -p "$PW" "$ACTUAL"
+security import "$TMP/pear.p12" -k "$ACTUAL" -P "$PW" -T /usr/bin/codesign >/dev/null 2>&1
 # 让 codesign 使用私钥时不弹「想要访问钥匙串」对话框
-security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PW" "$KC" >/dev/null 2>&1
+security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PW" "$ACTUAL" >/dev/null 2>&1
 
 rm -rf "$TMP"
 
 echo "==> 确认身份"
-security find-identity -p codesigning "$KC" | sed -n '3,5p'
+security find-identity -p codesigning "$ACTUAL" | sed -n '3,5p'
+echo "    钥匙串: $ACTUAL"
 echo
 echo "完成。之后 ./build.sh 会自动用这个身份签名。"

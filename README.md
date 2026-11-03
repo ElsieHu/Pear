@@ -1,6 +1,6 @@
-# LyricFeverDirect
+# Pear
 
-macOS 上的单行歌词浮窗。歌词**直接取自 Apple Music 当前播放曲目自己的官方歌词**，不经过第三方歌词库、不联网、不需要 token。
+macOS 上的单行歌词胶囊。歌词**直接取自 Apple Music 当前播放曲目自己的官方歌词**，不经过第三方歌词库、不联网、不需要 token。
 
 ![效果截图：桌面上的单行歌词胶囊与菜单栏「正在播放」面板](assets/screenshot.jpg)
 
@@ -27,10 +27,10 @@ macOS 上的单行歌词浮窗。歌词**直接取自 Apple Music 当前播放�
 
 ```bash
 ./build.sh                 # 编译打包 + 固定身份签名，自动安装到 /Applications
-./build.sh --no-install    # 只打包，产物留在 dist/LyricFeverDirect.app
+./build.sh --no-install    # 只打包，产物留在 dist/Pear.app
 ```
 
-想装到别的位置：`LYRIC_FEVER_INSTALL_DIR=/path/to/Applications ./build.sh`。
+想装到别的位置：`PEAR_INSTALL_DIR=/path/to/Applications ./build.sh`。
 
 ### 首次运行
 
@@ -39,7 +39,7 @@ macOS 上的单行歌词浮窗。歌词**直接取自 Apple Music 当前播放�
 
 ### 日常使用
 
-打开「音乐」开始播放，菜单栏出现歌名，浮窗自动显示当前歌词；点菜单栏图标进入设置与播放控制，或用上面的快捷键。想让浮窗完全不挡鼠标，勾选「鼠标穿透」。出问题时看菜单栏 ▸ 「诊断日志」，或 `~/Library/Logs/LyricFeverDirect.log`。
+打开「音乐」开始播放，菜单栏出现歌名，浮窗自动显示当前歌词；点菜单栏图标进入设置与播放控制，或用上面的快捷键。想让浮窗完全不挡鼠标，勾选「鼠标穿透」。出问题时看菜单栏 ▸ 「诊断日志」，或 `~/Library/Logs/Pear.log`。
 
 > 本地导入的音频没有 Apple Music 官方歌词，会如实提示，不会偷换外部来源。
 

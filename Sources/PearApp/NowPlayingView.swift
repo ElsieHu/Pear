@@ -174,9 +174,14 @@ struct NowPlayingView: View {
             }
             .keyboardShortcut(",", modifiers: .command)
 
+            MenuRow(title: "关于 Pear") {
+                NSApp.activate(ignoringOtherApps: true)
+                NSApp.orderFrontStandardAboutPanel(nil)
+            }
+
             Divider().padding(.vertical, 4)
 
-            MenuRow(title: "退出歌词浮窗", shortcut: "⌘Q") { NSApp.terminate(nil) }
+            MenuRow(title: "退出 Pear", shortcut: "⌘Q") { NSApp.terminate(nil) }
                 .keyboardShortcut("q", modifiers: .command)
         }
     }

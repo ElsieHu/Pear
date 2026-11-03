@@ -98,7 +98,7 @@ public enum MusicScript {
     /// a missing Automation grant. Two measurements killed that:
     /// - On current macOS `MRMediaRemoteGetNowPlayingInfo` returns nil even
     ///   while music is playing, so it contributed nothing.
-    /// - Calling it once per second made macOS pop “LyricFeverDirect.app 想
+    /// - Calling it once per second made macOS pop “Pear.app 想
     ///   访问 Apple Music…你的媒体资料库” over and over (that prompt is
     ///   MediaRemote's, not Apple Events').
     /// So: AppleScript only.

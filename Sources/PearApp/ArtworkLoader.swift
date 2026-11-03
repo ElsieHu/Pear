@@ -1,0 +1,172 @@
+import AppKit
+import SwiftUI
+import ImageIO
+import CoreGraphics
+
+/// Downloads album artwork from Apple's CDN and extracts a dominant colour.
+///
+/// Failure is a first-class outcome here: no URL, HTTP error, undecodable
+/// bytes, and flat / monochrome / very dark / very bright covers all leave
+/// `dominantHex` nil but log the reason and clear the "already requested"
+/// marker so the same track can be retried. `AppState` then walks an explicit
+/// fallback chain, so a usable colour is always produced.
+@MainActor
+final class ArtworkLoader: ObservableObject {
+    static let shared = ArtworkLoader()
+
+    @Published private(set) var image: NSImage?
+    @Published private(set) var dominantHex: String?
+    /// Last failure reason, surfaced in diagnostics.
+    @Published private(set) var lastFailure: String?
+
+    private let memoryCache = NSCache<NSString, NSImage>()
+    private var loadedURL: String?
+
+    private init() {
+        memoryCache.countLimit = 40
+    }
+
+    func load(url: URL?) {
+        guard let url else {
+            image = nil
+            dominantHex = nil
+            loadedURL = nil
+            lastFailure = nil
+            return
+        }
+        let key = url.absoluteString
+        guard loadedURL != key else { return }
+        loadedURL = key
+
+        if let cached = memoryCache.object(forKey: key as NSString) {
+            image = cached
+            let hex = Self.dominantHex(from: cached)
+            dominantHex = hex
+            lastFailure = hex == nil ? "缓存封面取色失败" : nil
+            if hex == nil { AppLog.warn("封面取色失败(缓存图): \(url.lastPathComponent)") }
+            return
+        }
+
+        image = nil
+        dominantHex = nil
+        lastFailure = nil
+        var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad,
+                                 timeoutInterval: 12)
+        request.setValue("image/*", forHTTPHeaderField: "Accept")
+
+        Task { [weak self] in
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                guard status == 0 || (200...299).contains(status) else {
+                    throw NSError(domain: "Pear.Artwork", code: status,
+                                  userInfo: [NSLocalizedDescriptionKey: "HTTP \(status)"])
+                }
+                guard let img = Self.decodeImage(data) else {
+                    throw NSError(domain: "Pear.Artwork", code: -1,
+                                  userInfo: [NSLocalizedDescriptionKey:
+                                    "图片解码失败 (\(data.count) 字节, 可能是不支持的格式或非图片响应)"])
+                }
+                let hex = Self.dominantHex(from: img)
+                guard let self else { return }
+                self.memoryCache.setObject(img, forKey: key as NSString)
+                self.image = img
+                self.dominantHex = hex
+                self.lastFailure = hex == nil ? "主色提取返回空" : nil
+                AppLog.info("封面已加载 \(data.count) 字节 HTTP \(status) 主色=\(hex ?? "-")")
+                if hex == nil {
+                    AppLog.warn("封面取色失败: \(url.lastPathComponent) → 交给配色兜底链")
+                }
+            } catch {
+                // Critical: a failed download must not pin loadedURL forever,
+                // otherwise the same song can never retry and the colour stays
+                // stuck at the default until the next track change.
+                self?.loadedURL = nil
+                self?.lastFailure = error.localizedDescription
+                AppLog.warn("封面失败: \(error.localizedDescription) url=\(url.lastPathComponent)")
+            }
+        }
+    }
+
+    // MARK: - Decoding
+
+    private static func decodeImage(_ data: Data) -> NSImage? {
+        if let img = NSImage(data: data) { return img }
+        // HEIC / bytes with a prologue sometimes defeat NSImage but ImageIO
+        // can still decode them.
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(src) > 0,
+              let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+        return NSImage(cgImage: cg, size: .zero)
+    }
+
+    private static func cgImage(from image: NSImage) -> CGImage? {
+        if let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) { return cg }
+        // Vector / PDF-backed representations have no direct cgImage; rebuild
+        // one from the TIFF representation.
+        guard let tiff = image.tiffRepresentation,
+              let src = CGImageSourceCreateWithData(tiff as CFData, nil),
+              let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+        return cg
+    }
+
+    // MARK: - Dominant colour
+
+    static func dominantHex(from image: NSImage) -> String? {
+        guard let cg = cgImage(from: image) else { return nil }
+        let side = 48
+        var raw = [UInt8](repeating: 0, count: side * side * 4)
+        let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+        guard let ctx = CGContext(data: &raw,
+                                  width: side,
+                                  height: side,
+                                  bitsPerComponent: 8,
+                                  bytesPerRow: side * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: info.rawValue) else { return nil }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: side, height: side))
+
+        // Pass 1 ignores near-black / near-white pixels to find a
+        // "characteristic" colour. Flat monochrome, pure black, pure white or
+        // very dark / very bright covers can filter out *every* pixel though,
+        // so pass 2 relaxes the luminance gate and only skips transparency.
+        let hex = pick(raw, side, strict: true) ?? pick(raw, side, strict: false)
+        guard let hex else { return nil }
+        return Self.legible(hex)
+    }
+
+    private static func pick(_ raw: [UInt8], _ side: Int, strict: Bool) -> String? {
+        var buckets: [Int: (count: Int, r: Int, g: Int, b: Int, sat: Double)] = [:]
+        for i in 0..<(side * side) {
+            let o = i * 4
+            let r = Int(raw[o]), g = Int(raw[o + 1]), b = Int(raw[o + 2]), a = Int(raw[o + 3])
+            guard a > 200 else { continue }
+            let maxC = max(r, g, b), minC = min(r, g, b)
+            let lum = (0.2126 * Double(r) + 0.7152 * Double(g) + 0.0722 * Double(b)) / 255.0
+            if strict, !(lum > 0.06 && lum < 0.93) { continue }
+            let sat = maxC == 0 ? 0 : Double(maxC - minC) / Double(maxC)
+            let key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)
+            var entry = buckets[key] ?? (0, 0, 0, 0, 0)
+            entry.count += 1
+            entry.r += r; entry.g += g; entry.b += b
+            entry.sat = max(entry.sat, sat)
+            buckets[key] = entry
+        }
+        guard let best = buckets.values.max(by: { lhs, rhs in
+            (Double(lhs.count) * (0.4 + lhs.sat)) < (Double(rhs.count) * (0.4 + rhs.sat))
+        }), best.count > 0 else { return nil }
+        let r = best.r / best.count, g = best.g / best.count, b = best.b / best.count
+        return String(format: "#%02X%02X%02X", r, g, b)
+    }
+
+    /// A near-white or near-black dominant colour would make the pill
+    /// unreadable; nudge it into a usable luminance band.
+    private static func legible(_ hex: String) -> String {
+        guard let c = Color(hex: hex) else { return hex }
+        let ns = NSColor(c).usingColorSpace(.deviceRGB) ?? NSColor.gray
+        let lum = 0.2126 * ns.redComponent + 0.7152 * ns.greenComponent + 0.0722 * ns.blueComponent
+        if lum > 0.88 { return c.blended(with: .black, fraction: 0.45).hexString }
+        if lum < 0.07 { return c.blended(with: .white, fraction: 0.28).hexString }
+        return hex
+    }
+}

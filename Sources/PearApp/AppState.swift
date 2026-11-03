@@ -91,7 +91,7 @@ final class AppState: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
-        AppLog.info("=== LyricFeverDirect 启动 ===")
+        AppLog.info("=== Pear 启动 ===")
 
         // Surface script failures (bad syntax, -10004 permission denial, …)
         // in the log instead of silently reporting "no track".
@@ -150,24 +150,61 @@ final class AppState: ObservableObject {
         applyAutoColors()
     }
 
-    /// Turn the artwork's palette into the colours the pill should use.
+    /// Turn artwork colours into the pill's palette through an explicit,
+    /// logged fallback chain: extracted colour → Apple's palette → the
+    /// user's own manual colour → a neutral grey. A usable background is
+    /// guaranteed on every path, even when the artwork never loads.
     private var lastColorLog = ""
 
+    private func validHex(_ value: String?) -> String? {
+        guard let value, Color(hex: value) != nil else { return nil }
+        return value
+    }
+
     private func applyAutoColors() {
-        guard let info = currentArtwork, appearance.colorModeRaw != "manual" else {
+        guard appearance.colorModeRaw != "manual" else {
             autoBackgroundHex = nil
             autoTextHex = nil
             return
         }
-        switch appearance.colorModeRaw {
-        case "artwork":
-            autoBackgroundHex = ArtworkLoader.shared.dominantHex ?? info.bgColorHex
-            autoTextHex = nil
-        default: // "album" — Apple's own bgColor / textColor1 pairing
-            autoBackgroundHex = info.bgColorHex
-            autoTextHex = info.textColorHex
+
+        let mode = appearance.colorModeRaw
+        let info = currentArtwork
+        let dominant = validHex(ArtworkLoader.shared.dominantHex)
+        let appleBG = validHex(info?.bgColorHex)
+        let appleFG = validHex(info?.textColorHex)
+        let manualBG = validHex(appearance.backgroundColorHex)
+
+        var bg: String?
+        var fg: String?
+        var source = ""
+
+        if mode == "artwork" {
+            if let d = dominant {
+                bg = d; source = "封面取色"
+            } else if let a = appleBG {
+                bg = a; fg = appleFG; source = "封面取色失败→Apple 配色"
+            }
+        } else { // "album" — Apple's own bgColor / textColor1 pairing
+            if let a = appleBG {
+                bg = a; fg = appleFG; source = "Apple 配色"
+            } else if let d = dominant {
+                bg = d; source = "Apple 配色缺失→封面取色"
+            }
         }
-        let msg = "配色[\(appearance.colorModeRaw)] bg=\(autoBackgroundHex ?? "-") fg=\(autoTextHex ?? "-") 有封面=\(currentArtwork != nil)"
+
+        if bg == nil {
+            bg = manualBG ?? LyricAppearance.neutralBackgroundHex
+            source = (source.isEmpty ? "自动取色不可用" : source)
+                + "→回退\(manualBG != nil ? "手动色" : "中性色")"
+            AppLog.warn("取色失败: \(source) mode=\(mode) 有封面=\(info != nil) 主色=\(dominant ?? "-") AppleBG=\(appleBG ?? "-") 最近失败=\(ArtworkLoader.shared.lastFailure ?? "-")")
+        }
+
+        autoBackgroundHex = bg
+        // nil → LyricAppearance.effective() computes a legible text colour.
+        autoTextHex = fg
+
+        let msg = "配色[\(mode)] 来源=\(source) bg=\(bg ?? "-") fg=\(fg ?? "自动")"
         guard msg != lastColorLog else { return }
         lastColorLog = msg
         AppLog.info(msg)
@@ -327,11 +364,18 @@ final class AppState: ObservableObject {
         UserDefaults.standard.set(data, forKey: "menuBarDisplay")
     }
 
+    /// One pending debounced write. A slider drag fires `didSet` many times;
+    /// without cancelling the previous task, an older snapshot could land
+    /// *after* a newer one and silently revert a mode/colour choice.
+    private var appearanceSaveTask: Task<Void, Never>?
+
     private func persistAppearance() {
         let snapshot = appearance
-        Task { @MainActor in
+        appearanceSaveTask?.cancel()
+        appearanceSaveTask = Task { @MainActor in
             // Coalesce rapid slider drags into a single write.
             try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
             guard let data = try? JSONEncoder().encode(snapshot) else { return }
             UserDefaults.standard.set(data, forKey: "appearance")
             // Let the panel re-fit to the new text metrics.
@@ -343,8 +387,21 @@ final class AppState: ObservableObject {
         appearance = LyricAppearance()
     }
 
+    /// Apply **only the palette** from a preset.
+    ///
+    /// Replacing the whole struct used to reset the font, size, radius and —
+    /// worst of all — `colorModeRaw` (a preset is built from defaults, where
+    /// the mode is `album`). That made choosing a manual colour silently jump
+    /// back to album colours and throw away the user's font choice. Presets
+    /// touch exactly three colour fields; everything else stays independent.
     func applyPreset(_ preset: LyricAppearance) {
-        appearance = preset
+        var updated = appearance
+        updated.backgroundColorHex = preset.backgroundColorHex
+        updated.textColorHex = preset.textColorHex
+        updated.highlightColorHex = preset.highlightColorHex
+        // Picking a preset is an explicit "use these manual colours".
+        updated.colorModeRaw = "manual"
+        appearance = updated
     }
 }
 

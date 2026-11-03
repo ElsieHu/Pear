@@ -35,8 +35,63 @@ struct LyricAppearance: Codable, Equatable {
     /// `manual` = 用上面的固定配色；`album` = 取 Apple 为专辑算好的配色；
     /// `artwork` = 下载封面图自行提取主色。
     var colorModeRaw: String = "album"
+    /// Neutral fallback when neither artwork extraction, Apple's palette, nor
+    /// the user's manual colour yields a usable hex.
+    static let neutralBackgroundHex = "#3A3A3C"
     /// 封面原色太亮时自动压暗，保证白字可读。
     var autoDarkenLightBackgrounds: Bool = true
+
+    // MARK: - Decoding
+
+    private enum CodingKeys: String, CodingKey {
+        case fontName, fontSize, fontWeightRaw
+        case textColorHex, highlightColorHex, backgroundColorHex
+        case backgroundOpacity, cornerRadius, horizontalPadding, verticalPadding, maxWidth
+        case textAlignmentRaw, dimOpacity
+        case showNextLine, nextLineScale
+        case sweepEnabled, shadowEnabled, hideOnHover, lockPosition, clickThrough
+        case colorModeRaw, autoDarkenLightBackgrounds
+    }
+
+    /// Declaring `init(from:)` suppresses the synthesised memberwise
+    /// initialiser, so keep an explicit zero-argument one for defaults/presets.
+    init() {}
+
+    /// Read settings key by key. The synthesised decoder throws if *any* key
+    /// is missing — which means a build that adds one new option would make
+    /// `AppState` fall back to **all** defaults, silently reverting the user's
+    /// font, colours and colour mode on the next launch. Per-key decoding keeps
+    /// older saved data readable and defaults only the genuinely new keys.
+    init(from decoder: Decoder) throws {
+        var a = LyricAppearance()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func read<T: Decodable>(_ key: CodingKeys, _ into: inout T) {
+            if let v = try? c.decode(T.self, forKey: key) { into = v }
+        }
+        read(.fontName, &a.fontName)
+        read(.fontSize, &a.fontSize)
+        read(.fontWeightRaw, &a.fontWeightRaw)
+        read(.textColorHex, &a.textColorHex)
+        read(.highlightColorHex, &a.highlightColorHex)
+        read(.backgroundColorHex, &a.backgroundColorHex)
+        read(.backgroundOpacity, &a.backgroundOpacity)
+        read(.cornerRadius, &a.cornerRadius)
+        read(.horizontalPadding, &a.horizontalPadding)
+        read(.verticalPadding, &a.verticalPadding)
+        read(.maxWidth, &a.maxWidth)
+        read(.textAlignmentRaw, &a.textAlignmentRaw)
+        read(.dimOpacity, &a.dimOpacity)
+        read(.showNextLine, &a.showNextLine)
+        read(.nextLineScale, &a.nextLineScale)
+        read(.sweepEnabled, &a.sweepEnabled)
+        read(.shadowEnabled, &a.shadowEnabled)
+        read(.hideOnHover, &a.hideOnHover)
+        read(.lockPosition, &a.lockPosition)
+        read(.clickThrough, &a.clickThrough)
+        read(.colorModeRaw, &a.colorModeRaw)
+        read(.autoDarkenLightBackgrounds, &a.autoDarkenLightBackgrounds)
+        self = a
+    }
 
     // MARK: - Derived
 

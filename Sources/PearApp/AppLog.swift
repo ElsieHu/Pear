@@ -12,10 +12,10 @@ enum AppLog {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent("Library/Logs", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("LyricFeverDirect.log")
+        return dir.appendingPathComponent("Pear.log")
     }()
 
-    private static let queue = DispatchQueue(label: "LyricFeverDirect.log")
+    private static let queue = DispatchQueue(label: "Pear.log")
     private static let maxBytes = 256 * 1024
 
     static func info(_ message: String) { write("INFO", message) }
@@ -42,7 +42,7 @@ enum AppLog {
             try? handle.close()
         }
         #if DEBUG
-        print("LyricFeverDirect [\(level)] \(message)")
+        print("Pear [\(level)] \(message)")
         #endif
     }
 

@@ -14,7 +14,7 @@ import Foundation
 /// Keeping every closure inside a type with no actor isolation at all makes
 /// the isolation explicit and the trap impossible.
 final class MusicPoller {
-    private let queue = DispatchQueue(label: "LyricFeverDirect.AppleScript", qos: .utility)
+    private let queue = DispatchQueue(label: "Pear.AppleScript", qos: .utility)
     private var timer: DispatchSourceTimer?
     private var interval: TimeInterval = 1.0
     private let onSnapshot: @Sendable (MusicSnapshot) -> Void

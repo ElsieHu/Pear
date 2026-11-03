@@ -38,7 +38,12 @@ public struct TTMLParser {
     ///   - ttml: Raw TTML document returned by the Apple Music lyrics endpoint.
     ///   - source: Origin label (defaults to "Apple Music").
     ///   - songID: Apple Music catalog song id these lyrics belong to.
-    public static func parse(_ ttml: String, source: String = "Apple Music", songID: String? = nil) throws -> TimedLyrics {
+    ///   - songDuration: Full track length in seconds, when known. Used to
+    ///     recognise a final line whose `end` was set to the end of the track
+    ///     (instrumental outro included) rather than the end of the singing.
+    public static func parse(_ ttml: String, source: String = "Apple Music",
+                             songID: String? = nil,
+                             songDuration: TimeInterval? = nil) throws -> TimedLyrics {
         guard !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw LyricsParseError.emptyDocument
         }
@@ -75,6 +80,7 @@ public struct TTMLParser {
         }
 
         return TimedLyrics(lines: sanitized, source: source, songID: songID, ttml: ttml)
+            .trimmingOutro(songDuration: songDuration)
     }
 }
 
