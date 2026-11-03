@@ -37,22 +37,6 @@ struct KaraokeView: View {
         switch state.panelContent {
         case .hidden:
             EmptyView()
-        case let .idle(message):
-            Text(message)
-                .font(ap.font(size: max(13, ap.fontSize * 0.6)))
-                .foregroundColor(ap.textColor.opacity(0.85))
-                .lineLimit(1)
-                .frame(maxWidth: ap.maxWidth)
-        case .loading:
-            HStack(spacing: 8) {
-                ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.7)
-                Text("正在读取 Apple Music 歌词…")
-                    .font(ap.font(size: max(13, ap.fontSize * 0.6)))
-            }
-            .foregroundColor(ap.textColor.opacity(0.85))
-            .frame(maxWidth: ap.maxWidth)
         case .lyrics:
             lyricsBody
         }

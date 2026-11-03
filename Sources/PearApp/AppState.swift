@@ -6,10 +6,13 @@ import LyricEngine
 import AppleMusicBridge
 
 /// What the floating window should render right now.
+///
+/// The pill is *content*, not a status surface: when a song has no lyrics
+/// (still loading, waiting for Apple Music to write its cache, or Apple has
+/// no synced lyrics at all) it stays hidden. Those messages belong in the
+/// menu-bar panel / 状态 page, where they do not cover the desktop.
 enum PanelContent: Equatable {
     case hidden
-    case idle(String)
-    case loading
     case lyrics
 }
 
@@ -381,16 +384,15 @@ final class AppState: ObservableObject {
 
     var panelContent: PanelContent {
         guard windowEnabled else { return .hidden }
-        // No current track means the Music app isn't running / nothing is
-        // playing. The pill must stay out of the way in that case — status
-        // messages belong in the menu-bar panel (which has a dedicated
-        // "allow Automation" row and the diagnostic log), not in a floating
-        // window that pops up on every launch with no music.
+        // No track → stay out of the way (Music isn't playing / no permission).
         guard monitor.track != nil else { return .hidden }
-        if lyrics != nil { return .lyrics }
-        if isFetching { return .loading }
-        if let err = lastError { return .idle(err) }
-        return .idle("正在等待 Apple Music 写入歌词…")
+        // No lyrics → stay out of the way as well. This covers the brief
+        // fetch, the "waiting for Apple Music to write its cache" retry loop
+        // and songs with no synced lyrics at all. Showing an "正在等待…" pill
+        // (or an error pill) for minutes was the reported annoyance; the
+        // status is still available in the menu-bar panel and 状态 page.
+        guard let lyrics, !lyrics.lines.isEmpty else { return .hidden }
+        return .lyrics
     }
 
     // MARK: - Persistence
