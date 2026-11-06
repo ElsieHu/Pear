@@ -21,6 +21,10 @@ final class ArtworkLoader: ObservableObject {
 
     private let memoryCache = NSCache<NSString, NSImage>()
     private var loadedURL: String?
+    /// Bumped on every new request. A download for the *previous* song can
+    /// finish after the track has already changed; without this check it
+    /// writes the old cover's colour over the new one.
+    private var loadGeneration = 0
 
     private init() {
         memoryCache.countLimit = 40
@@ -28,6 +32,8 @@ final class ArtworkLoader: ObservableObject {
 
     func load(url: URL?) {
         guard let url else {
+            // Invalidate anything still in flight for the previous track.
+            loadGeneration += 1
             image = nil
             dominantHex = nil
             loadedURL = nil
@@ -37,6 +43,10 @@ final class ArtworkLoader: ObservableObject {
         let key = url.absoluteString
         guard loadedURL != key else { return }
         loadedURL = key
+        // Only invalidate older requests when we actually start a new one —
+        // a repeated load() for the same URL must not cancel its own download.
+        loadGeneration += 1
+        let generation = loadGeneration
 
         if let cached = memoryCache.object(forKey: key as NSString) {
             image = cached
@@ -68,7 +78,7 @@ final class ArtworkLoader: ObservableObject {
                                     "图片解码失败 (\(data.count) 字节, 可能是不支持的格式或非图片响应)"])
                 }
                 let hex = Self.dominantHex(from: img)
-                guard let self else { return }
+                guard let self, self.loadGeneration == generation else { return }
                 self.memoryCache.setObject(img, forKey: key as NSString)
                 self.image = img
                 self.dominantHex = hex
@@ -78,11 +88,12 @@ final class ArtworkLoader: ObservableObject {
                     AppLog.warn("封面取色失败: \(url.lastPathComponent) → 交给配色兜底链")
                 }
             } catch {
+                guard let self, self.loadGeneration == generation else { return }
                 // Critical: a failed download must not pin loadedURL forever,
                 // otherwise the same song can never retry and the colour stays
                 // stuck at the default until the next track change.
-                self?.loadedURL = nil
-                self?.lastFailure = error.localizedDescription
+                self.loadedURL = nil
+                self.lastFailure = error.localizedDescription
                 AppLog.warn("封面失败: \(error.localizedDescription) url=\(url.lastPathComponent)")
             }
         }

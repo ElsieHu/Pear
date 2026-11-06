@@ -168,11 +168,16 @@ struct LyricAppearance: Codable, Equatable {
     /// own palette, keeping a legibility floor.
     func effective(backgroundHex: String?, textHex: String?) -> LyricAppearance {
         guard colorModeRaw != "manual" else { return self }
-        guard let bg = Color(hex: backgroundHex ?? "") else { return self }
+        // A missing automatic colour must not unmask the last manual palette.
+        // Returning `self` here let a previously chosen manual preset show
+        // through whenever artwork data was briefly unavailable.
+        let base = Color(hex: backgroundHex ?? "")
+            ?? Color(hex: Self.neutralBackgroundHex)
+            ?? .gray
 
         var copy = self
-        var background = bg
-        var foreground = Color(hex: textHex ?? "") ?? Self.legibleText(on: bg)
+        var background = base
+        var foreground = Color(hex: textHex ?? "") ?? Self.legibleText(on: base)
 
         if autoDarkenLightBackgrounds {
             let lum = Self.luminance(of: background)

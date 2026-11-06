@@ -77,6 +77,22 @@ struct VerifyMatch {
                               target: ("珠玉", "单依纯", 202.4))
         check(unrelated.accepted == false, "艺人与标题都不同必须拒绝")
 
+        // 2026-11-06 真实日志：同属 Taylor Swift、时长只差 0.1s / 2.1s，
+        // 旧规则凭「艺人+时长」把《You Belong With Me》的 47 行歌词当成
+        // 《22》《Fortnight》显示出来，还带逐字高亮，看起来格外可信。
+        let wrong22 = match(candidate: ("You Belong With Me (Taylor’s Version)", "Taylor Swift", 231.1),
+                            target: ("22 (Taylor's Version)", "Taylor Swift", 231.0))
+        check(wrong22.accepted == false, "同艺人+时长差 0.1s 但标题不同必须拒绝")
+
+        let wrongFortnight = match(candidate: ("You Belong With Me (Taylor’s Version)", "Taylor Swift", 231.1),
+                                   target: ("Fortnight (feat. Post Malone)", "Taylor Swift", 229.0))
+        check(wrongFortnight.accepted == false, "同艺人+时长差 2.1s 但标题不同必须拒绝")
+
+        // 收紧后仍要认出同一首歌的 remix / 版本后缀。
+        let remix = match(candidate: ("Lover", "Taylor Swift", 221.3),
+                          target: ("Lover (Remix) [feat. Shawn Mendes]", "Taylor Swift", 221.3))
+        check(remix.accepted, "版本后缀不同的同一首歌仍应命中")
+
         // 归一化：标点与大小写不应影响相等判定。
         check(LyricMatch.normalize("Don't Stop") == LyricMatch.normalize("Dont Stop"),
               "归一化应消除标点差异")

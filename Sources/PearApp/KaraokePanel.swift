@@ -16,6 +16,11 @@ final class KaraokePanel: NSPanel {
     private let state: AppState
     private var hosting: NSView?
     private var pill: NSView?
+    private var containerView: PillContainerView?
+    /// True while `performDrag` is tracking the mouse. Re-fitting the window
+    /// in the middle of that tracking loop is what makes a drag feel like it
+    /// "slipped out of your hand" — the frame moves under the cursor.
+    private var isDragging = false
     /// The rounded, clipping inner view — separate from `pill` because a
     /// layer that masks to its bounds also clips away its own shadow.
     private var chrome: NSView?
@@ -105,6 +110,16 @@ final class KaraokePanel: NSPanel {
         chrome.addSubview(hosting)
         contentView = container
         self.hosting = hosting
+        self.containerView = container
+
+        // The container owns dragging now (see PillContainerView). Wiring the
+        // state back lets `refit` hold still for the duration of a drag.
+        container.canDrag = !state.appearance.lockPosition
+        container.onDragStateChange = { [weak self] dragging in
+            guard let self else { return }
+            self.isDragging = dragging
+            if !dragging { self.refit(animated: false) }
+        }
 
         let leading = pill.leadingAnchor.constraint(equalTo: container.leadingAnchor,
                                                     constant: shadowRoom)
@@ -128,6 +143,7 @@ final class KaraokePanel: NSPanel {
         // otherwise the pill appears at its 420×56 placeholder for a frame.
         refit(animated: false)
         startFittingLoop()
+        startPassThroughLoop()
     }
 
     // MARK: - Re-centring on auto-resize
@@ -167,9 +183,82 @@ final class KaraokePanel: NSPanel {
 
     private func applyAppearance() {
         let ap = state.appearance
-        isMovableByWindowBackground = !ap.lockPosition
+        // AppKit's "movable by window background" only fires on the parts of
+        // the window where no subview accepts the click — here that was just
+        // the thin padding ring around the text. Dragging is now owned by the
+        // container (whole pill, text included), so turn the old path off.
+        isMovableByWindowBackground = false
+        containerView?.canDrag = !ap.lockPosition
         ignoresMouseEvents = ap.clickThrough
+        if !ap.clickThrough { clearPassThroughHole() }
         applyChrome()
+    }
+
+    // MARK: - Pass-through "bubble" (v2s style)
+
+    /// The window ignores all mouse events while click-through is on, so the
+    /// pointer can only be observed through `NSEvent.mouseLocation`. A short
+    /// polling loop is enough: no event taps, no Accessibility permission.
+    private func startPassThroughLoop() {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                self.updatePassThroughHole()
+                try? await Task.sleep(nanoseconds: 33_000_000)  // ~30 Hz
+            }
+        }
+    }
+
+    /// Cut a circular hole in the pill around the cursor so the window below
+    /// is visible (and clickable — the whole panel already ignores clicks).
+    /// Leaving the pill restores the plain rounded mask.
+    private func updatePassThroughHole() {
+        guard let chrome else { return }
+        guard state.appearance.clickThrough, isVisible else {
+            clearPassThroughHole()
+            return
+        }
+
+        let inWindow = convertPoint(fromScreen: NSEvent.mouseLocation)
+        let local = chrome.convert(inWindow, from: nil)
+        let bounds = chrome.bounds
+        // A small margin keeps the hole from flickering exactly at the edge.
+        guard bounds.insetBy(dx: -12, dy: -12).contains(local) else {
+            clearPassThroughHole()
+            return
+        }
+
+        let radius = min(34, max(14, bounds.height * 0.55))
+        let corner = min(CGFloat(state.effectiveAppearance.cornerRadius),
+                         min(bounds.width, bounds.height) / 2)
+        let path = CGMutablePath()
+        path.addRoundedRect(in: bounds, cornerWidth: corner, cornerHeight: corner)
+        path.addEllipse(in: CGRect(x: local.x - radius, y: local.y - radius,
+                                   width: radius * 2, height: radius * 2))
+
+        let shape: CAShapeLayer
+        if let existing = chrome.layer?.mask as? CAShapeLayer {
+            shape = existing
+        } else {
+            shape = CAShapeLayer()
+        }
+        // CALayer animates path/frame changes implicitly; at 30 Hz that would
+        // make the hole trail behind the cursor instead of following it.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shape.frame = bounds
+        shape.path = path
+        shape.fillRule = .evenOdd
+        if chrome.layer?.mask !== shape { chrome.layer?.mask = shape }
+        CATransaction.commit()
+    }
+
+    private func clearPassThroughHole() {
+        guard chrome?.layer?.mask != nil else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        chrome?.layer?.mask = nil
+        CATransaction.commit()
     }
 
     /// Background, corners and shadow of the pill.
@@ -293,6 +382,7 @@ final class KaraokePanel: NSPanel {
     /// content no longer produces a square edge — the content simply slides
     /// under the rounded mask.
     private func refit(animated: Bool = true) {
+        guard !isDragging else { return }
         guard let hosting, state.panelContent != .hidden else { return }
         // Don't interrupt a resize in flight: restarting from a halfway frame
         // makes the pill stutter instead of glide.
@@ -402,12 +492,55 @@ final class KaraokePanel: NSPanel {
 /// That ring of transparent window is invisible but still hit-testable, so
 /// without this it swallows clicks meant for whatever sits underneath. Clicks
 /// are only accepted inside the pill; everything else falls through.
+extension Notification.Name {
+    /// The container owns hit-testing now, so SwiftUI's `.onHover` no longer
+    /// receives mouseMoved. Hover is relayed through this notification.
+    static let pearPanelHover = Notification.Name("pear.panelHover")
+}
+
 private final class PillContainerView: NSView {
     weak var pill: NSView?
+    var canDrag = true
+    var onDragStateChange: (@MainActor (Bool) -> Void)?
+    private var trackingArea: NSTrackingArea?
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let pill, pill.frame.contains(point) else { return nil }
-        return super.hitTest(point)
+        // `super.hitTest` returned the SwiftUI hosting view, which swallowed
+        // mouseDown on the text. Only the thin padding ring around the lyrics
+        // could then start a drag — users had to aim for a few pixels. The
+        // entire pill is now one drag surface.
+        return self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard canDrag else { super.mouseDown(with: event); return }
+        onDragStateChange?(true)
+        window?.performDrag(with: event)
+        onDragStateChange?(false)
+    }
+
+    override var mouseDownCanMoveWindow: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds,
+                                  options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        NotificationCenter.default.post(name: .pearPanelHover, object: nil,
+                                        userInfo: ["over": true])
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        NotificationCenter.default.post(name: .pearPanelHover, object: nil,
+                                        userInfo: ["over": false])
     }
 }
 

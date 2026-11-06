@@ -177,7 +177,12 @@ final class AppState: ObservableObject {
         }
         if msg != lastArtworkLog {
             lastArtworkLog = msg
-            if info == nil { AppLog.warn(msg) } else { AppLog.info(msg) }
+            // A miss on the very first lookup is normal: the Music app writes
+            // artwork metadata asynchronously, usually 2–4 s later. Logging a
+            // WARN there made every single track change look like a failure.
+            // A genuinely missing cover is reported by the colour fallback
+            // chain once the grace period expires.
+            if info != nil { AppLog.info(msg) }
         }
         applyAutoColors()
     }
@@ -195,8 +200,24 @@ final class AppState: ObservableObject {
 
     private func applyAutoColors() {
         guard appearance.colorModeRaw != "manual" else {
-            autoBackgroundHex = nil
-            autoTextHex = nil
+            // Only publish on a real change: every assignment fires
+            // objectWillChange and redraws the settings window, which used to
+            // make the colour-source picker jitter while being used.
+            if autoBackgroundHex != nil || autoTextHex != nil {
+                autoBackgroundHex = nil
+                autoTextHex = nil
+            }
+            lastColorLog = ""
+            return
+        }
+
+        // No track yet (launch, or Music has just been quit): there is no
+        // artwork to derive colours from. Emitting "取色失败" here was a
+        // false alarm on every single launch.
+        guard monitor.track != nil else {
+            if autoBackgroundHex != nil { autoBackgroundHex = nil }
+            if autoTextHex != nil { autoTextHex = nil }
+            lastColorLog = ""
             return
         }
 
@@ -205,7 +226,6 @@ final class AppState: ObservableObject {
         let dominant = validHex(ArtworkLoader.shared.dominantHex)
         let appleBG = validHex(info?.bgColorHex)
         let appleFG = validHex(info?.textColorHex)
-        let manualBG = validHex(appearance.backgroundColorHex)
 
         var bg: String?
         var fg: String?
@@ -227,15 +247,27 @@ final class AppState: ObservableObject {
 
         var fallbackWarning: String?
         if bg == nil {
-            bg = manualBG ?? LyricAppearance.neutralBackgroundHex
-            source = (source.isEmpty ? "自动取色不可用" : source)
-                + "→回退\(manualBG != nil ? "手动色" : "中性色")"
+            // For the first few seconds of a new track the cache simply has
+            // not written artwork / Apple's palette yet. Hold the previous
+            // palette instead of flashing the manual colour and then jumping
+            // back when the real one lands a couple of seconds later.
+            if Date() < artworkGraceUntil, autoBackgroundHex != nil { return }
+
+            // Automatic modes must never borrow the manual palette. The user
+            // may have picked a loud two-colour preset and then switched back
+            // to album/artwork mode; falling back to those colours made the
+            // pill turn purple for a few seconds on every track change, which
+            // looked exactly like "colour extraction failed".
+            bg = LyricAppearance.neutralBackgroundHex
+            source = (source.isEmpty ? "自动取色不可用" : source) + "→中性色"
             fallbackWarning = "取色失败: \(source) mode=\(mode) 有封面=\(info != nil) 主色=\(dominant ?? "-") AppleBG=\(appleBG ?? "-") 最近失败=\(ArtworkLoader.shared.lastFailure ?? "-")"
         }
 
-        autoBackgroundHex = bg
         // nil → LyricAppearance.effective() computes a legible text colour.
-        autoTextHex = fg
+        if autoBackgroundHex != bg || autoTextHex != fg {
+            autoBackgroundHex = bg
+            autoTextHex = fg
+        }
 
         let msg = "配色[\(mode)] 来源=\(source) bg=\(bg ?? "-") fg=\(fg ?? "自动")"
         // Emit both the success INFO and the fallback WARN only when the
@@ -263,6 +295,13 @@ final class AppState: ObservableObject {
 
     private var didInitialFetch = false
     private var lastNoTrackLog = Date.distantPast
+    private let startedAt = Date()
+
+    /// The Music app writes artwork metadata and its TTML to the cache a few
+    /// seconds *after* a track starts. During that window the previous song's
+    /// palette is a better answer than a flash of the manual fallback colour.
+    private var artworkGraceUntil: Date = .distantPast
+    private var nextArtworkDate: Date = .distantPast
 
     private func watchTrackChanges() async {
         while !Task.isCancelled {
@@ -279,9 +318,16 @@ final class AppState: ObservableObject {
                 retryEligible = true
                 cacheDirty = false
                 nextRetryDate = .distantPast
+                artworkGraceUntil = Date().addingTimeInterval(6)
+                nextArtworkDate = .distantPast
                 if let t = monitor.track {
                     AppLog.info("曲目切换 → 《\(t.title)》- \(t.artist) [\(String(format: "%.1f", t.duration))s] 来源=AppleScript")
-                } else {
+                } else if !MusicScript.appIsRunning() {
+                    AppLog.info("音乐未运行 → 浮窗隐藏, 不再发送 AppleScript (不会把音乐重新打开)")
+                } else if Date().timeIntervalSince(startedAt) > 2 {
+                    // On launch the first loop iteration always runs before
+                    // the first AppleScript poll has returned. Complaining
+                    // about "no permission" there was a false alarm.
                     AppLog.warn("拿不到当前曲目 → 见上一条 AppleScript 具体报错 (若为 -10004 则是自动化未授权, 请在本应用重新打开后到「系统设置 ▸ 隐私与安全性 ▸ 自动化」允许控制“音乐”)")
                 }
                 resolveArtwork()
@@ -291,9 +337,13 @@ final class AppState: ObservableObject {
                 // lyrics path retries; the artwork path must too, or the
                 // album colours silently stay at the default forever.
                 if currentArtwork == nil { resolveArtwork() }
-            } else if monitor.track == nil, Date().timeIntervalSince(lastNoTrackLog) > 10 {
+            } else if monitor.track == nil,
+                      Date().timeIntervalSince(startedAt) > 5,
+                      Date().timeIntervalSince(lastNoTrackLog) > 10 {
                 lastNoTrackLog = Date()
-                AppLog.warn("仍无曲目 (具体原因见上面的 AppleScript 报错行)")
+                if MusicScript.appIsRunning() {
+                    AppLog.warn("音乐在运行但读不到当前曲目 (具体原因见上面的 AppleScript 报错行)")
+                }
             } else if lyrics == nil, monitor.track != nil, retryEligible {
                 let due = cacheDirty || Date() >= nextRetryDate
                 if due {
@@ -302,6 +352,16 @@ final class AppState: ObservableObject {
                     await fetchCurrent()
                     if currentArtwork == nil { resolveArtwork() }
                 }
+            }
+
+            // Artwork metadata can land *after* the lyrics. Keep looking for
+            // a short while, otherwise the album palette stays on the
+            // fallback colour for the whole song once the first lookup misses.
+            if monitor.track != nil, currentArtwork == nil,
+               Date() >= nextArtworkDate,
+               Date() < artworkGraceUntil.addingTimeInterval(12) {
+                nextArtworkDate = Date().addingTimeInterval(1.0)
+                resolveArtwork()
             }
             try? await Task.sleep(nanoseconds: 250_000_000)
         }

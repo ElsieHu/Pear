@@ -1,5 +1,19 @@
 import Foundation
 import Combine
+import AppKit
+
+/// AppleScript's `tell application "Music"` **launches** the app when it is
+/// not running. Pear polls once a second (or every three seconds while
+/// paused), so quitting Music while Pear is open made the next tick relaunch
+/// it — the app appeared impossible to quit. Check the process list before
+/// sending any script; only a running Music app may be queried.
+private enum MusicAppProcess {
+    static var isRunning: Bool {
+        NSRunningApplication
+            .runningApplications(withBundleIdentifier: "com.apple.Music")
+            .contains { !$0.isTerminated }
+    }
+}
 
 /// The currently playing track, as reported by the Music app.
 public struct CurrentTrack: Sendable, Equatable {
@@ -51,6 +65,23 @@ public enum MusicScript {
     public nonisolated(unsafe) static var diagnosticHandler: ((String) -> Void)?
     nonisolated(unsafe) private static var lastDiagnostic = ""
 
+    /// True when the Music app is already running. Exposed so the UI can
+    /// distinguish "not playing" from "permission denied" without guessing.
+    public static func appIsRunning() -> Bool { MusicAppProcess.isRunning }
+
+    /// A snapshot meaning "Music is not running".
+    ///
+    /// Returning this instead of `nil` matters: a nil is treated as a failed
+    /// poll and the monitor keeps its previous track, which would leave the
+    /// last song's lyrics frozen on screen after Music quits. An empty but
+    /// successful snapshot flows through `apply()` and clears them.
+    private static var stoppedSnapshot: MusicSnapshot {
+        MusicSnapshot(state: "stopped", position: 0,
+                      title: "", artist: "", album: "",
+                      duration: 0, persistentID: "",
+                      capturedAt: Date())
+    }
+
     /// One round-trip for state + position + track metadata.
     ///
     /// Variable names matter: `st` collides with a term in the Music app's
@@ -84,6 +115,12 @@ public enum MusicScript {
     """
 
     static func read() -> MusicSnapshot? {
+        // Never send a `tell application "Music"` while the app is closed:
+        // AppleEvent delivery would start it again. Playback-control scripts
+        // still go through `run()` directly — those are explicit user actions
+        // for which launching Music is the expected result.
+        guard MusicAppProcess.isRunning else { return stoppedSnapshot }
+
         let started = Date()
         guard let raw = run(combined), !raw.isEmpty else { return nil }
         // `player position` is read somewhere *inside* that osascript call.

@@ -27,6 +27,12 @@ struct KaraokeView: View {
             .onHover { over in
                 withAnimation(.easeInOut(duration: 0.18)) { hovering = over }
             }
+            // The panel container now owns hit-testing so the whole pill can
+            // be dragged; SwiftUI's .onHover no longer sees mouseMoved there.
+            .onReceive(NotificationCenter.default.publisher(for: .pearPanelHover)) { note in
+                guard let over = note.userInfo?["over"] as? Bool else { return }
+                withAnimation(.easeInOut(duration: 0.18)) { hovering = over }
+            }
             .opacity(ap.hideOnHover && hovering ? 0.15 : 1)
     }
 

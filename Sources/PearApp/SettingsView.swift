@@ -109,17 +109,46 @@ struct SettingsView: View {
 
     // MARK: - Colour
 
+    private func colourModeButton(_ title: String, mode: String) -> some View {
+        let selected = state.appearance.colorModeRaw == mode
+        return Button {
+            guard !selected else { return }
+            var updated = state.appearance
+            updated.colorModeRaw = mode
+            state.appearance = updated
+        } label: {
+            Text(title)
+                .font(.body)
+                .frame(maxWidth: .infinity, minHeight: 22)
+                .padding(.horizontal, 4)
+                .background(selected ? Color.accentColor.opacity(0.9) : Color.clear)
+                .foregroundStyle(selected ? Color.white : Color.primary)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+    }
+
     private var colorTab: some View {
         SettingsPage {
             SettingsSection("配色来源") {
                 SettingsRow("来源") {
-                    Picker("", selection: $state.appearance.colorModeRaw) {
-                        Text("专辑配色").tag("album")
-                        Text("封面取色").tag("artwork")
-                        Text("手动").tag("manual")
+                    // A SwiftUI Picker bound straight to a nested @Published
+                    // field writes its selection back while the view is being
+                    // redrawn. The pill repaints on every lyric line, so the
+                    // source kept flickering to 手动 and back — the floating
+                    // window then showed the last manual preset colour for a
+                    // moment, which looked like a colour-extraction failure.
+                    // Plain buttons write exactly once, only on a real click.
+                    HStack(spacing: 0) {
+                        colourModeButton("专辑配色", mode: "album")
+                        colourModeButton("封面取色", mode: "artwork")
+                        colourModeButton("手动", mode: "manual")
                     }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(Color.secondary.opacity(0.35), lineWidth: 1)
+                    )
                     .frame(maxWidth: 240)
                 }
 

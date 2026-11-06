@@ -26,9 +26,9 @@ public enum AppleMusicCacheLyricsSource {
         public var errorDescription: String? {
             switch self {
             case .cacheUnavailable:
-                return "读不到 Apple Music 的本地歌词缓存。请在“音乐”中播放或打开一次歌词面板。"
+                return "读不到「音乐」的本地歌词缓存。请播放曲库里的歌，并在「音乐」中打开一次「歌词」面板。"
             case .noLyrics:
-                return "正在等待 Apple Music 写入歌词…"
+                return "这首歌还没有歌词。请在「音乐」App 里点开一次「歌词」按钮，让它把同步歌词下载到本机；若已打开仍没有，说明 Apple 未提供这首歌的同步歌词。"
             case .noTimeSyncedLyrics:
                 return "Apple Music 本身就没有这首曲目的同步歌词(不回退到外部歌词源)。"
             }
@@ -274,7 +274,9 @@ public enum AppleMusicCacheLyricsSource {
     /// happily displayed that track's 69 lines — it looked like the lyrics
     /// were wrong until you hit refresh.
     /// A score can only rank; it cannot decide. Identity needs a gate:
-    /// the title must agree, or the artist *and* duration must both agree.
+    /// the title must agree; artist + duration is only a fallback when a
+    /// title is missing entirely (same artist + similar length is NOT enough —
+    /// it matched 《22》 and 《Fortnight》 to the wrong Taylor Swift song).
     private static func rankedEntries(for track: CurrentTrack) -> [Ranked] {
         let wantedTitle = LyricMatch.normalize(track.title)
         let wantedArtist = LyricMatch.normalize(track.artist)

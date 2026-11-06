@@ -30,8 +30,8 @@ public enum LyricMatch {
     /// previous track 《我管不住我自己》 (same artist, same album), the app
     /// displayed that track's 69 lines — the lyrics looked simply wrong until
     /// you hit refresh. A score can rank candidates; it cannot decide who
-    /// they are. Identity needs a gate: the title must agree, or the artist
-    /// *and* duration must both agree.
+    /// they are. Identity needs a gate: the title must agree; artist +
+    /// duration is only a rescue for entries with no title at all.
     ///
     /// Inputs are expected to be normalised.
     public static func evaluate(candidateTitle: String,
@@ -48,12 +48,24 @@ public enum LyricMatch {
         let artistExact = !targetArtist.isEmpty && candidateArtist == targetArtist
         let artistPartial = !targetArtist.isEmpty && !candidateArtist.isEmpty
             && (candidateArtist.contains(targetArtist) || targetArtist.contains(candidateArtist))
+        // Two different songs by the same artist can easily be within 2 s of
+        // each other. A 1 s tolerance still absorbs the AppleScript-vs-cache
+        // rounding difference for the *same* track, without pretending that
+        // duration identifies a song.
         let durationOK = candidateDuration > 0 && targetDuration > 0
-            && abs(candidateDuration - targetDuration) < 2.5
+            && abs(candidateDuration - targetDuration) < 1.0
 
+        // "Same artist + similar duration" was accepted unconditionally. In
+        // practice it matched 《22 (Taylor's Version)》 and 《Fortnight》 to
+        // the cached 《You Belong With Me (Taylor's Version)》 — 47 lines of
+        // the wrong song shown with full word-level highlighting. Identity
+        // must come from the title; artist + duration is only a rescue when a
+        // title is missing altogether (a cache entry without metadata, or an
+        // AppleScript result without one).
+        let titleMissing = candidateTitle.isEmpty || targetTitle.isEmpty
         let accepted = titleExact
             || (titlePartial && (artistExact || artistPartial || durationOK))
-            || (artistExact && durationOK)
+            || (titleMissing && artistExact && durationOK)
 
         var score = 0.0
         if titleExact { score += 10 } else if titlePartial { score += 5 }
