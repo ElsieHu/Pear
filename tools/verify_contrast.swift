@@ -98,6 +98,22 @@ struct VerifyContrast {
         check(ColorContrast.contrast(tooClose, pale) < target,
               "来源给的、与底色太接近的字色会被判为不达标并替换")
 
+        // 易读模式：保留封面的第二个颜色，只把它往可读方向微调。
+        let readable = rgb("#141B25")
+        check(ColorContrast.adjustedForContrast(readable, on: pale) == readable,
+              "两色本来就达标时原样保留，不改动封面色")
+        let nudged = ColorContrast.adjustedForContrast(tooClose, on: pale)
+        check(ColorContrast.contrast(nudged, pale) >= target - 0.005,
+              "过近的封面字色被微调到达标")
+        check(nudged != .black && nudged != .white,
+              "微调保留封面自身颜色，不直接跳到纯黑/纯白")
+        check(ColorContrast.contrast(blend(nudged, tooClose, 0.97), pale) < target,
+              "调整量恰好是达标所需的最小值")
+        let darkBg = rgb("#141B25")
+        let darkText = rgb("#2A3038")
+        check(ColorContrast.adjustedForContrast(darkText, on: darkBg).r > darkText.r,
+              "深底上的暗字往白调，浅底上的亮字往黑调")
+
         check(ColorContrast.readableDim(fg: .white, on: .white) == 1,
               "字色与底色相同时返回 1，不再继续压暗")
         check(ColorContrast.readableDim(fg: .white, on: .black) <= 0.75,

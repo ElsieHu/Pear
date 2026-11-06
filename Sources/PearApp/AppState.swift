@@ -31,7 +31,14 @@ final class AppState: ObservableObject {
 
     /// Persisted appearance of the floating window.
     @Published var appearance: LyricAppearance {
-        didSet { persistAppearance(); applyAutoColors() }
+        didSet {
+            persistAppearance()
+            applyAutoColors()
+            // The pill's AppKit background is not SwiftUI state. Refresh it
+            // immediately on any palette-related setting instead of waiting
+            // for the debounced persistence notification.
+            NotificationCenter.default.post(name: .effectiveAppearanceDidChange, object: nil)
+        }
     }
 
     /// Colours derived from the current album artwork (nil when unused).
@@ -130,7 +137,9 @@ final class AppState: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
 
         // Artwork arrives asynchronously; re-derive colours once it lands.
-        artworkCancellable = ArtworkLoader.shared.$dominantHex
+        // The palette publishes both colours as one value, so the dark and
+        // light halves can never be applied in separate frames.
+        artworkCancellable = ArtworkLoader.shared.$palette
             .sink { [weak self] _ in
                 Task { @MainActor in self?.applyAutoColors() }
             }
@@ -200,17 +209,14 @@ final class AppState: ObservableObject {
         applyAutoColors()
     }
 
-    /// Turn artwork colours into the pill's palette through an explicit,
-    /// logged chain: extracted colour → Apple's palette → the user's own
+    /// Turn the source's **two** colours into the pill's palette through an
+    /// explicit, logged chain: cover clusters → Apple's pair → the user's own
     /// manual colours.
     ///
-    /// A *missing* automatic colour is deliberately NOT resolved into a
-    /// substitute here. The auto fields are cleared so
-    /// `LyricAppearance.effective()` shows the user's manual palette verbatim,
-    /// and `autoColourMissing` keeps a dedicated retry loop alive until the
-    /// real colours land. Swapping in a neutral grey instead hid the failure
-    /// without fixing it — the actual defect was that the lookup never
-    /// retried, which is why hitting 刷新 always "fixed" it.
+    /// A *missing* palette is deliberately NOT resolved into a substitute. The
+    /// auto fields are cleared so `effective()` shows the user's manual pair
+    /// verbatim, and `autoColourMissing` keeps a dedicated retry loop alive
+    /// until the real colours land.
     private var lastColorLog = ""
 
     private func validHex(_ value: String?) -> String? {
@@ -218,11 +224,27 @@ final class AppState: ObservableObject {
         return value
     }
 
+    /// sRGB components for luminance ordering — no brightness threshold, the
+    /// same WCAG curve the contrast rules use.
+    private func components(_ hex: String) -> ColorContrast.RGB? {
+        guard let colour = Color(hex: hex),
+              let ns = NSColor(colour).usingColorSpace(.deviceRGB) else { return nil }
+        return ColorContrast.RGB(r: ns.redComponent,
+                                 g: ns.greenComponent,
+                                 b: ns.blueComponent)
+    }
+
     private func clearAutoColours() {
         // Only publish on a real change: every assignment fires
-        // objectWillChange and redraws the settings window.
-        if autoBackgroundHex != nil { autoBackgroundHex = nil }
-        if autoTextHex != nil { autoTextHex = nil }
+        // objectWillChange and redraws the settings window. The AppKit pill
+        // background is not SwiftUI state, so it needs an explicit wake-up
+        // whenever the automatic palette goes away (track change / waiting).
+        var changed = false
+        if autoBackgroundHex != nil { autoBackgroundHex = nil; changed = true }
+        if autoTextHex != nil { autoTextHex = nil; changed = true }
+        if changed {
+            NotificationCenter.default.post(name: .effectiveAppearanceDidChange, object: nil)
+        }
     }
 
     private func applyAutoColors() {
@@ -248,39 +270,35 @@ final class AppState: ObservableObject {
 
         let mode = appearance.colorModeRaw
         let info = currentArtwork
-        let dominant = validHex(ArtworkLoader.shared.dominantHex)
         let appleBG = validHex(info?.bgColorHex)
         let appleFG = validHex(info?.textColorHex)
 
-        var bg: String?
-        var fg: String?
+        var first: String?
+        var second: String?
         var source = ""
 
-        // One source, one answer. Borrowing the *other* source's colour while
+        // One source, one answer. Borrowing the other source's colour while
         // the requested one loads made the pill change colour a second after
-        // every track change ("取色结果不同"). The retry loop now wakes on the
-        // cache write itself, so that stand-in is no longer needed: until the
-        // chosen source lands, show the user's manual palette and keep trying.
+        // every track change ("取色结果不同").
         if mode == "artwork" {
-            if let d = dominant { bg = d; source = "封面取色" }
+            if let pair = ArtworkLoader.shared.palette {
+                first = pair.darkHex
+                second = pair.lightHex
+                source = "封面取色"
+            }
         } else { // "album" — Apple's own bgColor / textColor1 pairing
-            if let a = appleBG { bg = a; fg = appleFG; source = "Apple 配色" }
+            if let a = appleBG {
+                first = a
+                second = appleFG
+                source = "Apple 配色"
+            }
         }
 
-        if bg == nil {
-            // Show the user's own manual palette until the real one arrives,
-            // and keep retrying. Holding the *previous song's* colour here
-            // made the pill look wrong for as long as the cache was missing.
+        guard let a = first else {
             autoColourMissing = true
             clearAutoColours()   // → effective() uses the manual palette
             scheduleColourRetry()
-
-            // This is a normal wait, not a failure: the cover / cache is
-            // written a moment after the song starts and the watcher wakes
-            // the retry loop. A real download error has its own WARN.
-            let reason = "等待\(mode == "artwork" ? "封面主色" : "Apple 配色"): 暂用手动配色 有封面=\(info != nil) 主色=\(dominant ?? "-") AppleBG=\(appleBG ?? "-")"
-            // Deduplicated: the retry loop may call this dozens of times, and
-            // the reason usually does not change between attempts.
+            let reason = "等待\(mode == "artwork" ? "封面两色" : "Apple 两色"): 暂用手动配色 有封面=\(info != nil) 主色=\(ArtworkLoader.shared.dominantHex ?? "-") AppleBG=\(appleBG ?? "-")"
             if reason != lastColorLog {
                 lastColorLog = reason
                 AppLog.info(reason)
@@ -288,15 +306,40 @@ final class AppState: ObservableObject {
             return
         }
 
+        // Apple occasionally ships bgColor without textColor1. Complete the
+        // pair with the readable extreme so the dark/light roles still hold.
+        let b: String = {
+            if let second { return second }
+            guard let c = components(a) else { return "#FFFFFF" }
+            return ColorContrast.bestText(on: c).hexString
+        }()
+
+        let ca = components(a) ?? .black
+        let cb = components(b) ?? .white
+        let dark: String, light: String
+        if ColorContrast.luminance(ca) <= ColorContrast.luminance(cb) {
+            dark = a
+            light = b
+        } else {
+            dark = b
+            light = a
+        }
+        let preferDark = appearance.preferDarkBackground
+        let bg = preferDark ? dark : light
+        let fg = preferDark ? light : dark
+
         autoColourMissing = false
         colourRetryAttempt = 0
         nextColourRetryDate = .distantPast
         if autoBackgroundHex != bg || autoTextHex != fg {
             autoBackgroundHex = bg
             autoTextHex = fg
+            // SwiftUI repaints the text on @Published changes; the pill
+            // background lives on an AppKit layer and does not.
+            NotificationCenter.default.post(name: .effectiveAppearanceDidChange, object: nil)
         }
 
-        let msg = "配色[\(mode)] 来源=\(source) bg=\(bg ?? "-") fg=\(fg ?? "自动")"
+        let msg = "配色[\(mode)] 来源=\(source) 暗=\(dark) 亮=\(light) 底=\(bg) 字=\(fg) 暗底=\(preferDark) \(appearance.colourFidelityFirst ? "保真" : "易读")"
         guard msg != lastColorLog else { return }
         lastColorLog = msg
         AppLog.info(msg)

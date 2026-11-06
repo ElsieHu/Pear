@@ -130,6 +130,23 @@ else
     exit 1
 fi
 
+echo "==> 自检封面两色提取"
+VERIFY_PALETTE_BIN="$BUILD_DIR/verify_palette"
+VERIFY_PALETTE_LOG="$BUILD_DIR/verify_palette_build.log"
+if swiftc -O "$PROJECT_DIR/Sources/PearApp/ColorContrast.swift" \
+        "$PROJECT_DIR/Sources/PearApp/ColorPalette.swift" \
+        "$PROJECT_DIR/tools/verify_palette.swift" \
+        -o "$VERIFY_PALETTE_BIN" >"$VERIFY_PALETTE_LOG" 2>&1; then
+    if ! "$VERIFY_PALETTE_BIN"; then
+        echo "    ! 两色提取自检未通过，已中止构建"
+        exit 1
+    fi
+else
+    echo "    ! 两色提取自检程序编译失败："
+    tail -5 "$VERIFY_PALETTE_LOG"
+    exit 1
+fi
+
 echo "==> 生成图标"
 ICONSET="$BUILD_DIR/AppIcon.iconset"
 rm -rf "$ICONSET"

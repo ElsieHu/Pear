@@ -109,14 +109,11 @@ struct SettingsView: View {
 
     // MARK: - Colour
 
-    private func colourModeButton(_ title: String, mode: String) -> some View {
-        let selected = state.appearance.colorModeRaw == mode
-        return Button {
-            guard !selected else { return }
-            var updated = state.appearance
-            updated.colorModeRaw = mode
-            state.appearance = updated
-        } label: {
+    /// Plain buttons, not a Picker: a Picker bound to a nested @Published
+    /// field writes its selection back while the view is being redrawn.
+    private func optionButton(_ title: String, selected: Bool,
+                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             Text(title)
                 .font(.body)
                 .frame(maxWidth: .infinity, minHeight: 22)
@@ -128,36 +125,76 @@ struct SettingsView: View {
         .contentShape(Rectangle())
     }
 
+    private func colourModeButton(_ title: String, mode: String) -> some View {
+        let selected = state.appearance.colorModeRaw == mode
+        return optionButton(title, selected: selected) {
+            guard !selected else { return }
+            var updated = state.appearance
+            updated.colorModeRaw = mode
+            state.appearance = updated
+        }
+    }
+
+    /// The two automatic colours are ordered by luminance; this picks which
+    /// one becomes the pill. Default: dark background, light lyrics.
+    private func backgroundRoleButton(_ title: String, dark: Bool) -> some View {
+        let selected = state.appearance.preferDarkBackground == dark
+        return optionButton(title, selected: selected) {
+            guard !selected else { return }
+            var updated = state.appearance
+            updated.preferDarkBackground = dark
+            state.appearance = updated
+        }
+    }
+
+    private func fidelityButton(_ title: String, fidelity: Bool) -> some View {
+        let selected = state.appearance.colourFidelityFirst == fidelity
+        return optionButton(title, selected: selected) {
+            guard !selected else { return }
+            var updated = state.appearance
+            updated.colourFidelityFirst = fidelity
+            state.appearance = updated
+        }
+    }
+
+    private func segmented(_ content: some View) -> some View {
+        content
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.secondary.opacity(0.35), lineWidth: 1)
+            )
+            .frame(maxWidth: 260)
+    }
+
     private var colorTab: some View {
         SettingsPage {
             SettingsSection("配色来源") {
                 SettingsRow("来源") {
-                    // A SwiftUI Picker bound straight to a nested @Published
-                    // field writes its selection back while the view is being
-                    // redrawn. Plain buttons write exactly once, only on a
-                    // real click.
-                    HStack(spacing: 0) {
+                    segmented(HStack(spacing: 0) {
                         colourModeButton("Apple 配色", mode: "album")
-                        colourModeButton("封面主色", mode: "artwork")
+                        colourModeButton("封面取色", mode: "artwork")
                         colourModeButton("手动", mode: "manual")
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(Color.secondary.opacity(0.35), lineWidth: 1)
-                    )
-                    .frame(maxWidth: 260)
+                    })
                 }
 
-                Text("Apple 配色用 Apple 为歌词卡片配好的底色；封面主色从封面图提取。两种来源的歌词色都按对比度自动选，保证可读。")
+                Text("Apple 配色用 Apple 配好的两色，封面取色从封面提取两色。默认暗色打底、亮色作字；保真原样显示，易读微调字色保证清晰。")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if state.appearance.colorModeRaw != "manual" {
-                    SettingsRow("封面过亮时自动压暗") {
-                        Toggle("", isOn: $state.appearance.autoDarkenLightBackgrounds)
-                            .labelsHidden()
+                    SettingsRow("底色") {
+                        segmented(HStack(spacing: 0) {
+                            backgroundRoleButton("暗色打底", dark: true)
+                            backgroundRoleButton("亮色打底", dark: false)
+                        })
+                    }
+                    SettingsRow("颜色处理") {
+                        segmented(HStack(spacing: 0) {
+                            fidelityButton("保真", fidelity: true)
+                            fidelityButton("易读", fidelity: false)
+                        })
                     }
                 }
             }
@@ -227,17 +264,46 @@ struct SettingsView: View {
     }
 
     /// Live palette and contrast, at body size on the same line as each
-    /// label. Making the numbers visible is what tells the two sources apart:
-    /// Apple's card background and the cover's dominant colour really are
-    /// different colours, not a failed lookup.
+    /// label. Showing the source's two colours separately from the assigned
+    /// background / lyric roles makes the dark↔light swap visible.
     private var currentColorSection: some View {
         let ap = state.effectiveAppearance
         let bg = Color(hex: ap.backgroundColorHex) ?? .gray
         let fg = Color(hex: ap.textColorHex) ?? .white
         let ratio = Color.contrast(fg, bg)
+
+        let sourceDark: String?
+        let sourceLight: String?
+        if state.appearance.colorModeRaw != "manual",
+           let a = state.autoBackgroundHex, let b = state.autoTextHex {
+            let ca = Color(hex: a) ?? .gray
+            let cb = Color(hex: b) ?? .white
+            if ca.wcagLuminance <= cb.wcagLuminance {
+                sourceDark = a
+                sourceLight = b
+            } else {
+                sourceDark = b
+                sourceLight = a
+            }
+        } else {
+            sourceDark = nil
+            sourceLight = nil
+        }
+
         return SettingsSection("当前配色") {
             SettingsRow("来源") {
                 Text(currentSourceLabel).font(.body)
+            }
+            if let sourceDark, let sourceLight {
+                SettingsRow("来源两色") {
+                    HStack(spacing: 6) {
+                        colorSwatch(sourceDark)
+                        Text(sourceDark).font(.body)
+                        Text("·").foregroundStyle(.secondary)
+                        colorSwatch(sourceLight)
+                        Text(sourceLight).font(.body)
+                    }
+                }
             }
             SettingsRow("底色") {
                 HStack(spacing: 8) {
@@ -264,10 +330,10 @@ struct SettingsView: View {
             return "手动配色"
         case "artwork":
             return state.autoBackgroundHex == nil
-                ? "暂用手动配色(等待封面)" : "封面主色"
+                ? "暂用手动配色(等待封面两色)" : "封面取色"
         default:
             return state.autoBackgroundHex == nil
-                ? "暂用手动配色(等待 Apple 配色)" : "Apple 配色"
+                ? "暂用手动配色(等待 Apple 两色)" : "Apple 配色"
         }
     }
 

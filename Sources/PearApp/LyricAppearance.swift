@@ -52,7 +52,18 @@ struct LyricAppearance: Codable, Equatable {
     /// Neutral fallback when neither artwork extraction, Apple's palette, nor
     /// the user's manual colour yields a usable hex.
     static let neutralBackgroundHex = "#3A3A3C"
-    /// 封面原色太亮时自动压暗，保证白字可读。
+
+    /// The two automatic colours are ordered by luminance. This decides which
+    /// one becomes the pill and which becomes the lyrics: dark background +
+    /// light text by default, flippable from settings.
+    var preferDarkBackground: Bool = true
+    /// 保真 = show both extracted colours exactly as they are. 易读 = nudge
+    /// the lyric colour just enough to clear 4.5:1 and keep the unsung half
+    /// above 3:1. Manual colours are never recoloured in either mode.
+    var colourFidelityFirst: Bool = false
+    /// Retired: the old "darken very light covers" switch altered the
+    /// background itself and made the pill disagree with the artwork. Kept in
+    /// the coding keys so older saved preferences still decode cleanly.
     var autoDarkenLightBackgrounds: Bool = true
 
     // MARK: - Decoding
@@ -65,6 +76,7 @@ struct LyricAppearance: Codable, Equatable {
         case showNextLine, nextLineScale
         case sweepEnabled, shadowEnabled, shadowIntensity, hideOnHover, lockPosition, clickThrough
         case colorModeRaw, autoDarkenLightBackgrounds
+        case preferDarkBackground, colourFidelityFirst
     }
 
     /// Declaring `init(from:)` suppresses the synthesised memberwise
@@ -105,6 +117,8 @@ struct LyricAppearance: Codable, Equatable {
         read(.clickThrough, &a.clickThrough)
         read(.colorModeRaw, &a.colorModeRaw)
         read(.autoDarkenLightBackgrounds, &a.autoDarkenLightBackgrounds)
+        read(.preferDarkBackground, &a.preferDarkBackground)
+        read(.colourFidelityFirst, &a.colourFidelityFirst)
         self = a
     }
 
@@ -168,80 +182,55 @@ struct LyricAppearance: Codable, Equatable {
     static let minimumTextContrast = ColorContrast.minimumTextContrast
     static let minimumDimContrast = ColorContrast.minimumDimContrast
 
-    /// The contract for automatic colouring (Nov 6):
+    /// The contract for automatic colouring (revised Nov 6):
     ///
-    /// 1. **Background is the source colour, verbatim.** It is never
-    ///    "corrected" to make room for text — darkening a pink cover into
-    ///    grey was why the pill did not look like the artwork.
-    /// 2. **Lyric colour is chosen against that exact background** by WCAG
-    ///    contrast, not by a brightness threshold. Black and white are
-    ///    complementary, so the better of the two always clears 4.5:1 on an
-    ///    opaque sRGB background. A supplied colour (Apple's `textColor1`)
-    ///    is only kept when it clears the same bar.
-    /// 3. **The dimmed half is the same colour at `dimOpacity`** over the
-    ///    background. A fixed 0.45 collapsed contrast on mid-tone covers, so
-    ///    solve for the smallest alpha that clears the large-text floor (3:1)
-    ///    and use it as a floor. Never dim below readability.
-    /// 4. Manual mode keeps the user's exact pair; only the dim floor applies.
-    ///    Waiting for a colour also shows the manual pair verbatim.
+    /// 1. **Both colours come from the chosen source** — two clusters from
+    ///    the cover, or Apple's `bgColor` / `textColor1` pair. `AppState`
+    ///    orders them dark → light and assigns background / lyrics.
+    /// 2. **The background is verbatim.** It is never darkened or lightened:
+    ///    that was why the pill looked nothing like the artwork. The old
+    ///    `autoDarkenLightBackgrounds` switch is retired.
+    /// 3. **易读** nudges only the lyric colour toward the readable extreme
+    ///    (smallest change reaching 4.5:1, hue preserved) and keeps the
+    ///    unsung half above 3:1. **保真** shows both colours untouched.
+    /// 4. Manual mode — and the wait for a colour to arrive — keeps the
+    ///    user's own pair exactly as chosen.
     func effective(backgroundHex: String?, textHex: String?) -> LyricAppearance {
         let autoBackground = colorModeRaw != "manual"
             ? Color(hex: backgroundHex ?? "") : nil
-        let sourceBackground = autoBackground
-            ?? Color(hex: backgroundColorHex)
-            ?? Color(red: 0.23, green: 0.23, blue: 0.24)
-
-        var background = sourceBackground
-        if autoDarkenLightBackgrounds {
-            let lum = Self.luminance(of: background)
-            if lum > 0.72 {
-                background = background.blended(with: .black,
-                                                fraction: min(0.45, (lum - 0.72) * 1.8))
-            } else if lum < 0.10 {
-                background = background.blended(with: .white, fraction: 0.12)
-            }
-        }
-
         var copy = self
+
+        let background: Color
         let foreground: Color
-        if autoBackground != nil {
-            let supplied = Color(hex: textHex ?? "")
-            foreground = supplied.flatMap { c in
-                Color.contrast(c, background) >= Self.minimumTextContrast ? c : nil
-            } ?? Color.bestTextColor(on: background)
+        if let autoBackground {
+            background = autoBackground
             copy.backgroundColorHex = background.hexString
-            copy.textColorHex = foreground.hexString
-            copy.highlightColorHex = foreground.hexString
+            // A missing second colour only happens while a source is still
+            // loading; black/white is the last resort, not the default.
+            foreground = Color(hex: textHex ?? "")
+                ?? Color.bestTextColor(on: background)
         } else {
-            // No automatic colour yet (cache still writing), or an explicit
-            // manual choice. Keep those colours exactly as chosen.
+            background = Color(hex: backgroundColorHex)
+                ?? Color(red: 0.23, green: 0.23, blue: 0.24)
             foreground = Color(hex: textColorHex) ?? .white
         }
 
-        let floor = Color.readableDimOpacity(fg: foreground, on: background,
+        if colourFidelityFirst {
+            copy.textColorHex = foreground.hexString
+            copy.highlightColorHex = foreground.hexString
+            return copy
+        }
+
+        // Manual colours are the user's own decision: never recolour them.
+        let readable = autoBackground != nil
+            ? Color.readableTextColor(foreground, on: background)
+            : foreground
+        copy.textColorHex = readable.hexString
+        copy.highlightColorHex = readable.hexString
+        let floor = Color.readableDimOpacity(fg: readable, on: background,
                                              minimumContrast: Self.minimumDimContrast)
         copy.dimOpacity = min(1, max(dimOpacity, floor))
         return copy
-    }
-
-    /// Perceptual-ish brightness used only by the optional "darken very light
-    /// covers" switch. Contrast decisions use `Color.wcagLuminance` instead.
-    private static func luminance(of color: Color) -> Double {
-        let ns = NSColor(color).usingColorSpace(.deviceRGB) ?? NSColor.black
-        return 0.2126 * ns.redComponent + 0.7152 * ns.greenComponent + 0.0722 * ns.blueComponent
-    }
-}
-
-extension Color {
-    func blended(with other: Color, fraction: Double) -> Color {
-        let a = NSColor(self).usingColorSpace(.deviceRGB) ?? NSColor.black
-        let b = NSColor(other).usingColorSpace(.deviceRGB) ?? NSColor.black
-        let f = min(max(fraction, 0), 1)
-        return Color(
-            red: a.redComponent * (1 - f) + b.redComponent * f,
-            green: a.greenComponent * (1 - f) + b.greenComponent * f,
-            blue: a.blueComponent * (1 - f) + b.blueComponent * f
-        )
     }
 }
 
@@ -266,6 +255,13 @@ extension Color {
 
     static func bestTextColor(on background: Color) -> Color {
         let c = ColorContrast.bestText(on: background.contrastRGB)
+        return Color(red: c.r, green: c.g, blue: c.b)
+    }
+
+    /// 易读 mode: keep the cover's second colour, just make it legible.
+    static func readableTextColor(_ candidate: Color, on background: Color) -> Color {
+        let c = ColorContrast.adjustedForContrast(candidate.contrastRGB,
+                                                  on: background.contrastRGB)
         return Color(red: c.r, green: c.g, blue: c.b)
     }
 

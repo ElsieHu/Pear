@@ -8,11 +8,15 @@ import Foundation
 ///
 /// The rules themselves (see also `LyricAppearance.effective`):
 /// 1. The cover / Apple background colour is used verbatim.
-/// 2. Lyric colour is picked by measured contrast, never a brightness cutoff.
+/// 2. In 易读 mode the cover's own second colour is nudged toward the
+///    readable extreme *just enough* to clear 4.5:1, keeping its hue. Pure
+///    black / white is only the last resort when a cover has no second colour.
 /// 3. The not-yet-sung half may be dimmed, but never below the WCAG AA
 ///    large-text floor. Lyrics render at 22pt bold, well above the 14pt bold
 ///    large-text threshold. Holding the *body* 4.5:1 floor here would force
 ///    85–95% opacity on mid-tone covers and erase the karaoke sweep.
+/// 4. 保真 mode skips steps 2–3 entirely: both extracted colours are shown
+///    exactly as they appear on the cover.
 enum ColorContrast {
     struct RGB: Equatable {
         let r, g, b: Double
@@ -44,6 +48,34 @@ enum ColorContrast {
     /// always clears `minimumTextContrast` on any opaque sRGB background.
     static func bestText(on background: RGB) -> RGB {
         contrast(.white, background) >= contrast(.black, background) ? .white : .black
+    }
+
+    /// Keep a cover colour's character while making it readable.
+    ///
+    /// Replacing an unreadable swatch with pure black / white is what made
+    /// every automatic palette look monochrome. Instead, move it toward the
+    /// extremity that improves contrast on this background (black on a light
+    /// cover, white on a dark one) and stop at the *smallest* amount that
+    /// reaches `minimumContrast`. Hue and relative saturation survive.
+    static func adjustedForContrast(_ fg: RGB, on background: RGB,
+                                    minimumContrast: Double = minimumTextContrast) -> RGB {
+        guard contrast(fg, background) < minimumContrast else { return fg }
+        let toward = bestText(on: background)
+        func mixed(_ t: Double) -> RGB {
+            RGB(r: fg.r * (1 - t) + toward.r * t,
+                g: fg.g * (1 - t) + toward.g * t,
+                b: fg.b * (1 - t) + toward.b * t)
+        }
+        var lo = 0.0, hi = 1.0
+        for _ in 0..<24 {
+            let mid = (lo + hi) / 2
+            if contrast(mixed(mid), background) >= minimumContrast {
+                hi = mid
+            } else {
+                lo = mid
+            }
+        }
+        return mixed(hi)
     }
 
     /// Smallest alpha at which `fg` composited over `background` still clears

@@ -26,6 +26,7 @@ final class KaraokePanel: NSPanel {
     /// layer that masks to its bounds also clips away its own shadow.
     private var chrome: NSView?
     private var cancellable: AnyCancellable?
+    private var autoColourCancellable: AnyCancellable?
     private var stateCancellable: AnyCancellable?
 
     /// How much room the window keeps around the pill for its shadow. Only
@@ -313,8 +314,8 @@ final class KaraokePanel: NSPanel {
         pillTrailing?.constant = -shadowRoom
         pillBottom?.constant = -shadowRoom
 
-        let msg = String(format: "外壳 圆角=%.0f 阴影=%@ 强度=%.2f 模糊=%.0f 不透明度=%.2f 留白=%.0f",
-                         ap.cornerRadius, ap.shadowEnabled ? "开" : "关",
+        let msg = String(format: "外壳 底色=%@ 圆角=%.0f 阴影=%@ 强度=%.2f 模糊=%.0f 不透明度=%.2f 留白=%.0f",
+                         ap.backgroundColorHex, ap.cornerRadius, ap.shadowEnabled ? "开" : "关",
                          ap.shadowIntensity, pillLayer.shadowRadius,
                          pillLayer.shadowOpacity, shadowRoom)
         guard msg != lastChromeLog else { return }
@@ -332,6 +333,14 @@ final class KaraokePanel: NSPanel {
                     self?.applyAppearance()
                     self?.refit()
                 }
+            }
+        // Automatic colours arrive on every track change without any settings
+        // edit. `chromeLayer.backgroundColor` is plain AppKit state, so it
+        // needs its own wake-up — SwiftUI's repaint only covers the text.
+        autoColourCancellable = NotificationCenter.default
+            .publisher(for: .effectiveAppearanceDidChange)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.applyChrome() }
             }
     }
 
