@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import CoreGraphics
 
 /// A borderless, always-on-top floating panel that shows **one** line of
 /// synced lyrics, sized to the text itself.
@@ -209,9 +210,9 @@ final class KaraokePanel: NSPanel {
         }
     }
 
-    /// Cut a circular hole in the pill around the cursor so the window below
-    /// is visible (and clickable — the whole panel already ignores clicks).
-    /// Leaving the pill restores the plain rounded mask.
+    /// Cut a soft-edged circular hole in the pill around the cursor so the
+    /// window below shows through. The panel already ignores all clicks, so
+    /// what is visible through the hole is clickable too.
     private func updatePassThroughHole() {
         guard let chrome else { return }
         guard state.appearance.clickThrough, isVisible else {
@@ -222,35 +223,47 @@ final class KaraokePanel: NSPanel {
         let inWindow = convertPoint(fromScreen: NSEvent.mouseLocation)
         let local = chrome.convert(inWindow, from: nil)
         let bounds = chrome.bounds
-        // A small margin keeps the hole from flickering exactly at the edge.
-        guard bounds.insetBy(dx: -12, dy: -12).contains(local) else {
+        // Leave room for the feathered rim to fade out past the pill edge
+        // instead of popping in/out exactly at the boundary.
+        guard bounds.insetBy(dx: -24, dy: -24).contains(local) else {
             clearPassThroughHole()
             return
         }
 
         let radius = min(34, max(14, bounds.height * 0.55))
+        let feather = min(18, radius * 0.6)
         let corner = min(CGFloat(state.effectiveAppearance.cornerRadius),
                          min(bounds.width, bounds.height) / 2)
-        let path = CGMutablePath()
-        path.addRoundedRect(in: bounds, cornerWidth: corner, cornerHeight: corner)
-        path.addEllipse(in: CGRect(x: local.x - radius, y: local.y - radius,
-                                   width: radius * 2, height: radius * 2))
 
-        let shape: CAShapeLayer
-        if let existing = chrome.layer?.mask as? CAShapeLayer {
-            shape = existing
+        let maskLayer: PassThroughMaskLayer
+        if let existing = chrome.layer?.mask as? PassThroughMaskLayer {
+            maskLayer = existing
         } else {
-            shape = CAShapeLayer()
+            maskLayer = PassThroughMaskLayer()
+            maskLayer.contentsScale = chrome.layer?.contentsScale ?? 2
         }
-        // CALayer animates path/frame changes implicitly; at 30 Hz that would
-        // make the hole trail behind the cursor instead of following it.
+
+        // Redraw only when something actually moved — a 30 Hz full repaint of
+        // the mask while the cursor is parked is pure waste.
+        let moved = maskLayer.frame != bounds
+            || abs(maskLayer.holeCenter.x - local.x) > 0.5
+            || abs(maskLayer.holeCenter.y - local.y) > 0.5
+            || maskLayer.holeRadius != radius
+            || maskLayer.feather != feather
+            || maskLayer.pillCornerRadius != corner
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        shape.frame = bounds
-        shape.path = path
-        shape.fillRule = .evenOdd
-        if chrome.layer?.mask !== shape { chrome.layer?.mask = shape }
+        if moved {
+            maskLayer.frame = bounds
+            maskLayer.holeCenter = local
+            maskLayer.holeRadius = radius
+            maskLayer.feather = feather
+            maskLayer.pillCornerRadius = corner
+        }
+        if chrome.layer?.mask !== maskLayer { chrome.layer?.mask = maskLayer }
         CATransaction.commit()
+        if moved { maskLayer.setNeedsDisplay() }
     }
 
     private func clearPassThroughHole() {
@@ -561,5 +574,56 @@ private final class PillShadowView: NSView {
                                   cornerWidth: r,
                                   cornerHeight: r,
                                   transform: nil)
+    }
+}
+
+/// Mask with a soft-edged circular hole for click-through.
+///
+/// A layer mask reads only the *alpha* channel, and a `CAShapeLayer` with an
+/// even-odd path can only ever be binary — that produced the hard, cut-out
+/// circle. Here the rounded pill is first filled opaque, then a radial
+/// gradient is subtracted with `destinationOut` (`D * (1 - Sa)`): alpha 1 at
+/// the centre removes the mask completely, alpha 0 at the rim leaves it
+/// intact, and the stops in between give the feathered edge.
+private final class PassThroughMaskLayer: CALayer {
+    var holeCenter: CGPoint = .zero
+    var holeRadius: CGFloat = 34
+    var feather: CGFloat = 16
+    /// Not `cornerRadius`: CALayer already owns that name.
+    var pillCornerRadius: CGFloat = 14
+
+    override func draw(in ctx: CGContext) {
+        let b = bounds
+        ctx.clear(b)
+
+        // Everything inside the rounded pill starts out visible.
+        let rounded = CGPath(roundedRect: b,
+                             cornerWidth: pillCornerRadius,
+                             cornerHeight: pillCornerRadius,
+                             transform: nil)
+        ctx.addPath(rounded)
+        ctx.clip()
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1))
+        ctx.fill(b)
+
+        let inner = max(1, holeRadius - feather * 0.35)
+        let outer = holeRadius + feather
+        guard outer > inner else { return }
+        let colors = [
+            CGColor(gray: 0, alpha: 1),
+            CGColor(gray: 0, alpha: 1),
+            CGColor(gray: 0, alpha: 0)
+        ] as CFArray
+        let locations: [CGFloat] = [0, inner / outer, 1]
+        guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceGray(),
+                                        colors: colors, locations: locations) else { return }
+
+        ctx.setBlendMode(.destinationOut)
+        ctx.drawRadialGradient(gradient,
+                               startCenter: holeCenter,
+                               startRadius: 0,
+                               endCenter: holeCenter,
+                               endRadius: outer,
+                               options: [])
     }
 }

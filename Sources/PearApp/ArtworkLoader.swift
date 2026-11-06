@@ -21,6 +21,16 @@ final class ArtworkLoader: ObservableObject {
 
     private let memoryCache = NSCache<NSString, NSImage>()
     private var loadedURL: String?
+    private var lastURL: URL?
+    /// True from the first attempt until success or the last retry gives up.
+    /// The colour retry loop calls `load(url:)` repeatedly; without this flag
+    /// each of those calls would cancel a retry already in flight.
+    private var downloadInFlight = false
+    /// A transient network error is worth retrying on its own schedule; a
+    /// cover that decodes but yields no dominant colour is not (retrying the
+    /// same bytes cannot produce a different answer).
+    private static let maxAttempts = 4
+    private static let retryDelays: [TimeInterval] = [1, 2, 4]
     /// Bumped on every new request. A download for the *previous* song can
     /// finish after the track has already changed; without this check it
     /// writes the old cover's colour over the new one.
@@ -34,21 +44,32 @@ final class ArtworkLoader: ObservableObject {
         guard let url else {
             // Invalidate anything still in flight for the previous track.
             loadGeneration += 1
+            downloadInFlight = false
             image = nil
             dominantHex = nil
             loadedURL = nil
+            lastURL = nil
             lastFailure = nil
             return
         }
         let key = url.absoluteString
+        let previousURL = lastURL?.absoluteString
+        lastURL = url
         guard loadedURL != key else { return }
+        // A retry is already running for *this* cover — don't cancel it. But
+        // a different URL means a new track: go ahead and invalidate the old
+        // request, otherwise the previous cover's colour lands on this song.
+        if downloadInFlight, previousURL == key { return }
         loadedURL = key
         // Only invalidate older requests when we actually start a new one —
         // a repeated load() for the same URL must not cancel its own download.
         loadGeneration += 1
-        let generation = loadGeneration
+        startDownload(url: url, generation: loadGeneration, attempt: 0)
+    }
 
-        if let cached = memoryCache.object(forKey: key as NSString) {
+    private func startDownload(url: URL, generation: Int, attempt: Int) {
+        let key = url.absoluteString
+        if attempt == 0, let cached = memoryCache.object(forKey: key as NSString) {
             image = cached
             let hex = Self.dominantHex(from: cached)
             dominantHex = hex
@@ -60,6 +81,7 @@ final class ArtworkLoader: ObservableObject {
         image = nil
         dominantHex = nil
         lastFailure = nil
+        downloadInFlight = true
         var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad,
                                  timeoutInterval: 12)
         request.setValue("image/*", forHTTPHeaderField: "Accept")
@@ -79,6 +101,11 @@ final class ArtworkLoader: ObservableObject {
                 }
                 let hex = Self.dominantHex(from: img)
                 guard let self, self.loadGeneration == generation else { return }
+                self.downloadInFlight = false
+                // The bytes are good whether or not a dominant colour could
+                // be extracted; pin the URL so the retry loop stops re-fetching
+                // this cover and Apple's palette can take over instead.
+                self.loadedURL = key
                 self.memoryCache.setObject(img, forKey: key as NSString)
                 self.image = img
                 self.dominantHex = hex
@@ -89,12 +116,19 @@ final class ArtworkLoader: ObservableObject {
                 }
             } catch {
                 guard let self, self.loadGeneration == generation else { return }
-                // Critical: a failed download must not pin loadedURL forever,
-                // otherwise the same song can never retry and the colour stays
-                // stuck at the default until the next track change.
+                // Clear the "already requested" marker so the colour retry
+                // loop can start a fresh download for this same cover.
                 self.loadedURL = nil
                 self.lastFailure = error.localizedDescription
-                AppLog.warn("封面失败: \(error.localizedDescription) url=\(url.lastPathComponent)")
+                AppLog.warn("封面失败(第 \(attempt + 1) 次): \(error.localizedDescription) url=\(url.lastPathComponent)")
+                guard attempt + 1 < Self.maxAttempts else {
+                    self.downloadInFlight = false
+                    return
+                }
+                let delay = Self.retryDelays[min(attempt, Self.retryDelays.count - 1)]
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard self.loadGeneration == generation else { return }
+                self.startDownload(url: url, generation: generation, attempt: attempt + 1)
             }
         }
     }

@@ -10,7 +10,8 @@ import Foundation
 /// when the volume holding the cache is unmounted, etc.).
 final class CacheDirectoryWatcher {
     private let path: String
-    private let onChange: () -> Void
+    /// `true` means the 5-second safety-net timer fired, not a real write.
+    private let onChange: (Bool) -> Void
 
     private let queue = DispatchQueue(label: "Pear.cacheWatch")
     private var source: DispatchSourceFileSystemObject?
@@ -19,7 +20,7 @@ final class CacheDirectoryWatcher {
     private var lastFire = Date.distantPast
     private let throttle: TimeInterval = 0.35
 
-    init(path: String, onChange: @escaping () -> Void) {
+    init(path: String, onChange: @escaping (Bool) -> Void) {
         self.path = path
         self.onChange = onChange
     }
@@ -72,6 +73,6 @@ final class CacheDirectoryWatcher {
         let now = Date()
         guard force || now.timeIntervalSince(lastFire) >= throttle else { return }
         lastFire = now
-        onChange()
+        onChange(force)
     }
 }

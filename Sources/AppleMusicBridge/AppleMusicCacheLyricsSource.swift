@@ -110,6 +110,9 @@ public enum AppleMusicCacheLyricsSource {
     private struct Scan {
         let entries: [Entry]
         let records: [SongRecord]
+        /// Artwork + colours keyed by song id, including records that have no
+        /// TTML yet. The palette must not depend on the lyrics being cached.
+        let artworkByID: [String: (template: String?, bg: String?, fg: String?)]
     }
 
     /// Scan the cache and return every song that has TTML lyrics.
@@ -126,6 +129,15 @@ public enum AppleMusicCacheLyricsSource {
     private static let scanTTL: TimeInterval = 2.0
     private nonisolated(unsafe) static var memo: (at: Date, scan: Scan)?
     private static let memoLock = NSLock()
+
+    /// Drop the short-lived scan memo. A colour retry must see cache files
+    /// written since the previous lookup instead of replaying a stale view
+    /// for the full TTL.
+    public static func invalidateScanCache() {
+        memoLock.lock()
+        memo = nil
+        memoLock.unlock()
+    }
 
     private static func currentScan() -> Scan {
         memoLock.lock()
@@ -146,7 +158,9 @@ public enum AppleMusicCacheLyricsSource {
     private static func scan() -> Scan {
         guard let dir = cacheDirectory,
               let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path),
-              !names.isEmpty else { return Scan(entries: [], records: []) }
+              !names.isEmpty else {
+            return Scan(entries: [], records: [], artworkByID: [:])
+        }
 
         var songMeta: [String: (title: String, artist: String, album: String, duration: TimeInterval)] = [:]
         var hasSynced: [String: Bool] = [:]
@@ -231,16 +245,44 @@ public enum AppleMusicCacheLyricsSource {
                        duration: meta.duration,
                        hasTimeSyncedLyrics: hasSynced[id])
         }
-        return Scan(entries: entries, records: records)
+        return Scan(entries: entries, records: records, artworkByID: artworkByID)
     }
 
     /// Artwork + Apple's own colour pair for the currently playing track.
     public static func artworkInfo(for track: CurrentTrack) -> ArtworkInfo? {
-        guard let entry = bestEntry(for: track),
-              let template = entry.artworkURLTemplate, !template.isEmpty else { return nil }
-        return ArtworkInfo(urlTemplate: template,
-                           bgColorHex: entry.bgColorHex,
-                           textColorHex: entry.textColorHex)
+        let scan = currentScan()
+        // Preferred: the lyrics entry carries the artwork metadata.
+        if let entry = bestEntry(for: track),
+           let template = entry.artworkURLTemplate, !template.isEmpty {
+            return ArtworkInfo(urlTemplate: template,
+                               bgColorHex: entry.bgColorHex,
+                               textColorHex: entry.textColorHex)
+        }
+
+        // The song record — artwork URL and Apple's palette — is frequently
+        // cached *before* the TTML lyrics land. Requiring a lyrics entry made
+        // colour extraction fail for as long as Music was still fetching the
+        // words, which is exactly why a manual 刷新 always "fixed" it: by
+        // then the lyrics had arrived. Match the record directly instead.
+        let wantedTitle = LyricMatch.normalize(track.title)
+        let wantedArtist = LyricMatch.normalize(track.artist)
+        var best: (id: String, score: Double)?
+        for r in scan.records {
+            guard let art = scan.artworkByID[r.id],
+                  let template = art.template, !template.isEmpty else { continue }
+            let v = LyricMatch.evaluate(candidateTitle: LyricMatch.normalize(r.title),
+                                        candidateArtist: LyricMatch.normalize(r.artist),
+                                        candidateDuration: r.duration,
+                                        targetTitle: wantedTitle,
+                                        targetArtist: wantedArtist,
+                                        targetDuration: track.duration)
+            guard v.accepted else { continue }
+            if best == nil || v.score > best!.score { best = (r.id, v.score) }
+        }
+        guard let id = best?.id,
+              let art = scan.artworkByID[id],
+              let template = art.template, !template.isEmpty else { return nil }
+        return ArtworkInfo(urlTemplate: template, bgColorHex: art.bg, textColorHex: art.fg)
     }
 
     /// Best-matching cached entry for the track currently playing.

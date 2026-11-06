@@ -168,12 +168,12 @@ struct LyricAppearance: Codable, Equatable {
     /// own palette, keeping a legibility floor.
     func effective(backgroundHex: String?, textHex: String?) -> LyricAppearance {
         guard colorModeRaw != "manual" else { return self }
-        // A missing automatic colour must not unmask the last manual palette.
-        // Returning `self` here let a previously chosen manual preset show
-        // through whenever artwork data was briefly unavailable.
-        let base = Color(hex: backgroundHex ?? "")
-            ?? Color(hex: Self.neutralBackgroundHex)
-            ?? .gray
+        // No usable automatic colour yet: `AppState` clears both auto fields
+        // in that case, and we show the user's own manual palette verbatim —
+        // same background *and* same lyric colour, with no darkening and no
+        // auto-computed text colour. That is the intended fallback, not a bug:
+        // silently substituting a neutral grey here made things worse.
+        guard let base = Color(hex: backgroundHex ?? "") else { return self }
 
         var copy = self
         var background = base
