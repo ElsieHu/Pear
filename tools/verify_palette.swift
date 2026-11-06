@@ -47,7 +47,7 @@ struct VerifyPalette {
             check(!solid.hasSecondColour, "单色封面标记为没有第二个封面色")
             check(ColorContrast.contrast(solid.dark, solid.light)
                   >= ColorContrast.minimumTextContrast,
-                  "单色封面的兜底字色达到 4.5:1")
+                  "单色封面的兜底字色达到字色底线")
             check(near(solid.primary, rgb("#303030"), 0.01), "主色就是封面色")
         }
 
@@ -64,8 +64,9 @@ struct VerifyPalette {
             check(near(pair.dark, rgb("#123456"), 0.08)
                   && near(pair.light, rgb("#FFE066"), 0.08),
                   "暗色=深蓝、亮色=亮黄，默认暗色打底时正好是深底亮字")
-            check(ColorContrast.contrast(pair.dark, pair.light) >= 4.5,
-                  "选出的两色本身达到正文对比度")
+            check(ColorContrast.contrast(pair.dark, pair.light)
+                  >= ColorContrast.minimumTextContrast,
+                  "选出的两色本身达到大字对比度")
         }
 
         // 3. 渐变不再被固定色阶平均成一团灰棕，两端颜色都保留下来。
@@ -100,7 +101,29 @@ struct VerifyPalette {
         check(again?.darkHex == pair?.darkHex && again?.lightHex == pair?.lightHex,
               "同一封面重复提取结果一致（无随机种子抖动）")
 
-        // 6. 色相距离与 hex 序列化。
+        // 6. 《珠玉》那类封面：红是主色，青/蓝面积不小、色相差异最大，
+        // 但对比只有约 1.9:1。旧规则用 4.5:1 硬过滤把它淘汰，退而选了
+        // 对比最高的中性色；现在应优先取封面里确实存在的蓝色，可读性
+        // 交给易读模式微调。
+        let redCover = repeated("#F03E47", 600)
+            + repeated("#45C9CA", 200)
+            + repeated("#E9E4D9", 150)
+            + repeated("#44423C", 50)
+        let redPair = ColorPalette.extract(from: redCover)
+        check(redPair != nil, "红 + 蓝 + 浅色封面提取成功")
+        if let redPair {
+            check(near(redPair.primary, rgb("#F03E47"), 0.06),
+                  "主色仍是面积最大的红色")
+            check(near(redPair.light, rgb("#45C9CA"), 0.09)
+                  || near(redPair.dark, rgb("#45C9CA"), 0.09),
+                  "第二色选中封面里的蓝/青，而不是白色或黑色")
+            check(ColorContrast.contrast(redPair.dark, redPair.light)
+                  < ColorContrast.minimumTextContrast,
+                  "允许选出尚未达标但色相不同的封面色，交由易读微调")
+            check(redPair.hasSecondColour, "标记为找到了封面第二色")
+        }
+
+        // 7. 色相距离与 hex 序列化。
         check(ColorPalette.hueDistance(rgb("#FF0000"), rgb("#00FFFF")) > 0.4,
               "红 / 青色相距离大")
         check(ColorPalette.hueDistance(rgb("#FF0000"), rgb("#808080")) == 0,

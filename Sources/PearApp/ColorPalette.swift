@@ -9,9 +9,13 @@ import Foundation
 /// The old extractor returned a single "dominant" bucket, which forced the
 /// lyric colour to be pure black or pure white. Here the cover is clustered,
 /// the largest cluster is the visual main colour, and a second cluster is
-/// chosen for being *both* different in hue and readable against it. The two
-/// are then ordered by WCAG luminance; `AppState` decides which one is the
-/// background (dark by default) and which one is the lyric colour.
+/// chosen primarily for being a *different colour* in the artwork. Contrast
+/// is a scoring term, not an elimination gate: a hard "≥4.5:1" filter was
+/// unsatisfiable on mid-tone covers and silently reduced the choice to
+/// "highest contrast swatch", which is why a cover with blue in it kept
+/// producing black / white lyrics. Readability is handled downstream by
+/// 易读 mode's small adjustment instead. The two are ordered by WCAG
+/// luminance; `AppState` decides which is the background (dark by default).
 enum ColorPalette {
 
     struct Swatch {
@@ -98,23 +102,24 @@ enum ColorPalette {
             second = ColorContrast.bestText(on: primary)
             hasSecond = false
         } else {
-            // Prefer a cluster that is already readable; among those, pick by
-            // hue difference + area. If none clears the bar, take the highest
-            // contrast available — the readable mode will nudge it later.
-            let readable = others.filter {
-                ColorContrast.contrast($0.colour, primary) >= ColorContrast.minimumTextContrast
+            // A genuinely different colour from the cover wins, even when its
+            // raw contrast is low — 易读 mode nudges it to readability later,
+            // and 保真 shows it untouched. Requiring ≥4.5:1 here filtered out
+            // *every* candidate on mid-tone covers (to clear 4.5:1 against a
+            // colour of luminance 0.22 a swatch must be brighter than white
+            // or darker than #1A1A1A), so the hue/area score never ran.
+            let distinguishable = others.filter {
+                // Near-black / near-white clusters can carry a nominal hue
+                // from a 1–2/255 channel difference. Requiring real chroma
+                // keeps them from masquerading as "a different colour".
+                chroma($0.colour) >= 0.15
+                    && hueDistance($0.colour, primary) >= 0.15
+                    && Double($0.count) / total >= 0.03
             }
-            if let best = readable.max(by: {
+            let pool = distinguishable.isEmpty ? others : distinguishable
+            second = pool.max(by: {
                 score($0, total: total, against: primary) < score($1, total: total, against: primary)
-            }) {
-                second = best.colour
-            } else if let best = others.max(by: {
-                ColorContrast.contrast($0.colour, primary) < ColorContrast.contrast($1.colour, primary)
-            }) {
-                second = best.colour
-            } else {
-                second = ColorContrast.bestText(on: primary)
-            }
+            })?.colour ?? ColorContrast.bestText(on: primary)
             hasSecond = true
         }
 
@@ -125,11 +130,19 @@ enum ColorPalette {
                     hasSecondColour: hasSecond)
     }
 
+    private static func chroma(_ c: ColorContrast.RGB) -> Double {
+        max(c.r, c.g, c.b) - min(c.r, c.g, c.b)
+    }
+
+    /// Hue difference leads: the point of taking two colours is that the
+    /// second one is recognisably another colour from the cover, not just
+    /// "whatever is easiest to read". Area keeps a one-pixel accent from
+    /// winning; contrast only breaks ties.
     private static func score(_ s: Swatch, total: Double,
                               against primary: ColorContrast.RGB) -> Double {
         let contrast = min(ColorContrast.contrast(s.colour, primary), 12) / 12
         let area = Double(s.count) / total
-        return contrast * 1.6 + hueDistance(s.colour, primary) * 1.2 + area * 1.4
+        return hueDistance(s.colour, primary) * 2.0 + area * 1.2 + contrast * 0.6
     }
 
     /// Luminance-weighted sRGB distance. Grouping in gamma-encoded space is

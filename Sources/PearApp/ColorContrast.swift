@@ -8,13 +8,15 @@ import Foundation
 ///
 /// The rules themselves (see also `LyricAppearance.effective`):
 /// 1. The cover / Apple background colour is used verbatim.
-/// 2. In 易读 mode the cover's own second colour is nudged toward the
-///    readable extreme *just enough* to clear 4.5:1, keeping its hue. Pure
-///    black / white is only the last resort when a cover has no second colour.
-/// 3. The not-yet-sung half may be dimmed, but never below the WCAG AA
-///    large-text floor. Lyrics render at 22pt bold, well above the 14pt bold
-///    large-text threshold. Holding the *body* 4.5:1 floor here would force
-///    85–95% opacity on mid-tone covers and erase the karaoke sweep.
+/// 2. In 易读 mode the cover's own second colour is nudged *just enough* to
+///    clear 3:1 (WCAG AA large text — lyrics are 22pt bold), toward whichever
+///    of black / white needs the smaller change. Holding the 4.5:1 body-text
+///    floor here made pure white fail on mid-tone covers and forced every
+///    lyric colour to near-black, erasing the second cover colour.
+/// 3. The not-yet-sung half may be dimmed, but not below a readable floor.
+///    It sits slightly under 3:1 so a sung colour that *just* clears 3:1
+///    still leaves room for the karaoke sweep instead of pinning opacity to
+///    100%.
 /// 4. 保真 mode skips steps 2–3 entirely: both extracted colours are shown
 ///    exactly as they appear on the cover.
 enum ColorContrast {
@@ -24,10 +26,14 @@ enum ColorContrast {
         static let black = RGB(r: 0, g: 0, b: 0)
     }
 
-    /// WCAG 2.1 AA for body text — required for the sung (highlight) half.
-    static let minimumTextContrast = 4.5
-    /// WCAG 2.1 AA for large text — the floor for the dimmed, unsung half.
-    static let minimumDimContrast = 3.0
+    /// WCAG 2.1 AA for **large** text — the sung (highlight) half. Lyrics
+    /// render at 22pt bold, above the 14pt-bold / 18pt threshold. The old
+    /// 4.5:1 body-text floor was wrong here and turned cover colours black.
+    static let minimumTextContrast = 3.0
+    /// Floor for the dimmed, unsung half. Slightly below the sung floor on
+    /// purpose: when the sung colour only just clears 3:1, demanding 3:1 for
+    /// the dimmed half too would force `dimOpacity` to 1 and remove the sweep.
+    static let minimumDimContrast = 2.5
 
     /// Relative luminance with the sRGB transfer function removed. Using raw
     /// sRGB channels (the old 0.55 brightness cutoff) badly overestimates
@@ -52,30 +58,41 @@ enum ColorContrast {
 
     /// Keep a cover colour's character while making it readable.
     ///
-    /// Replacing an unreadable swatch with pure black / white is what made
-    /// every automatic palette look monochrome. Instead, move it toward the
-    /// extremity that improves contrast on this background (black on a light
-    /// cover, white on a dark one) and stop at the *smallest* amount that
-    /// reaches `minimumContrast`. Hue and relative saturation survive.
+    /// Both extremes are solved and the **smaller colour change** wins. Only
+    /// following `bestText` used to drag every unreadable swatch toward the
+    /// single highest-contrast extreme: on a mid-tone red cover that made all
+    /// lyric colours near-black, even though a touch of white was closer.
     static func adjustedForContrast(_ fg: RGB, on background: RGB,
                                     minimumContrast: Double = minimumTextContrast) -> RGB {
         guard contrast(fg, background) < minimumContrast else { return fg }
-        let toward = bestText(on: background)
-        func mixed(_ t: Double) -> RGB {
-            RGB(r: fg.r * (1 - t) + toward.r * t,
-                g: fg.g * (1 - t) + toward.g * t,
-                b: fg.b * (1 - t) + toward.b * t)
-        }
-        var lo = 0.0, hi = 1.0
-        for _ in 0..<24 {
-            let mid = (lo + hi) / 2
-            if contrast(mixed(mid), background) >= minimumContrast {
-                hi = mid
-            } else {
-                lo = mid
+        let preferred = bestText(on: background)
+        let alternate: RGB = preferred == .black ? .white : .black
+
+        func solve(toward: RGB) -> (colour: RGB, distance: Double)? {
+            func mixed(_ t: Double) -> RGB {
+                RGB(r: fg.r * (1 - t) + toward.r * t,
+                    g: fg.g * (1 - t) + toward.g * t,
+                    b: fg.b * (1 - t) + toward.b * t)
             }
+            guard contrast(toward, background) >= minimumContrast else { return nil }
+            var lo = 0.0, hi = 1.0
+            for _ in 0..<24 {
+                let mid = (lo + hi) / 2
+                if contrast(mixed(mid), background) >= minimumContrast {
+                    hi = mid
+                } else {
+                    lo = mid
+                }
+            }
+            let result = mixed(hi)
+            let dr = result.r - fg.r, dg = result.g - fg.g, db = result.b - fg.b
+            return (result, 0.30 * dr * dr + 0.59 * dg * dg + 0.11 * db * db)
         }
-        return mixed(hi)
+
+        let a = solve(toward: preferred)
+        let b = solve(toward: alternate)
+        if let a, let b { return a.distance <= b.distance ? a.colour : b.colour }
+        return a?.colour ?? b?.colour ?? preferred
     }
 
     /// Smallest alpha at which `fg` composited over `background` still clears

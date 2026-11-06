@@ -178,7 +178,7 @@ struct SettingsView: View {
                     })
                 }
 
-                Text("Apple 配色用 Apple 配好的两色，封面取色从封面提取两色。默认暗色打底、亮色作字；保真原样显示，易读微调字色保证清晰。")
+                Text("Apple 配色用 Apple 配好的两色，封面取色从封面提取两色。默认把两色中较暗的作为底色、较亮的作为歌词色；保真原样显示，易读只在字色看不清时微调。")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -186,8 +186,8 @@ struct SettingsView: View {
                 if state.appearance.colorModeRaw != "manual" {
                     SettingsRow("底色") {
                         segmented(HStack(spacing: 0) {
-                            backgroundRoleButton("暗色打底", dark: true)
-                            backgroundRoleButton("亮色打底", dark: false)
+                            backgroundRoleButton("较暗打底", dark: true)
+                            backgroundRoleButton("较亮打底", dark: false)
                         })
                     }
                     SettingsRow("颜色处理") {
@@ -271,6 +271,14 @@ struct SettingsView: View {
         let bg = Color(hex: ap.backgroundColorHex) ?? .gray
         let fg = Color(hex: ap.textColorHex) ?? .white
         let ratio = Color.contrast(fg, bg)
+        // The source colour and the colour actually on screen are different
+        // things in 易读 mode. Showing both is what makes the adjustment
+        // visible instead of looking like the extractor "picked black".
+        let sourceTextHex = state.appearance.colorModeRaw != "manual"
+            ? state.autoTextHex : nil
+        let textAdjusted = sourceTextHex.map {
+            $0.uppercased() != ap.textColorHex.uppercased()
+        } ?? false
 
         let sourceDark: String?
         let sourceLight: String?
@@ -305,16 +313,30 @@ struct SettingsView: View {
                     }
                 }
             }
-            SettingsRow("底色") {
+            SettingsRow("实际底色") {
                 HStack(spacing: 8) {
                     colorSwatch(ap.backgroundColorHex)
                     Text(ap.backgroundColorHex).font(.body)
                 }
             }
-            SettingsRow("歌词色") {
+            SettingsRow("实际歌词色") {
                 HStack(spacing: 8) {
                     colorSwatch(ap.textColorHex)
                     Text(ap.textColorHex).font(.body)
+                }
+            }
+            if state.appearance.colorModeRaw != "manual" {
+                SettingsRow("字色处理") {
+                    HStack(spacing: 6) {
+                        if textAdjusted, let sourceTextHex {
+                            colorSwatch(sourceTextHex)
+                            Text("→").foregroundStyle(.secondary)
+                            colorSwatch(ap.textColorHex)
+                            Text("易读已微调").font(.body)
+                        } else {
+                            Text("原样").font(.body)
+                        }
+                    }
                 }
             }
             SettingsRow("对比度") {

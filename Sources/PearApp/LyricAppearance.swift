@@ -58,8 +58,9 @@ struct LyricAppearance: Codable, Equatable {
     /// light text by default, flippable from settings.
     var preferDarkBackground: Bool = true
     /// 保真 = show both extracted colours exactly as they are. 易读 = nudge
-    /// the lyric colour just enough to clear 4.5:1 and keep the unsung half
-    /// above 3:1. Manual colours are never recoloured in either mode.
+    /// the lyric colour just enough to clear 3:1 (large text) and keep the
+    /// unsung half above 2.5:1. Manual colours are never recoloured in either
+    /// mode.
     var colourFidelityFirst: Bool = false
     /// Retired: the old "darken very light covers" switch altered the
     /// background itself and made the pill disagree with the artwork. Kept in
@@ -177,8 +178,8 @@ struct LyricAppearance: Codable, Equatable {
 
     // MARK: - Auto colour
 
-    /// WCAG 2.1 AA: body-text floor for the sung half, large-text floor for
-    /// the dimmed half (lyrics are 22pt bold).
+    /// WCAG 2.1 AA large-text floor (3:1) for the sung half, with a slightly
+    /// lower floor for the dimmed half so the sweep survives (22pt bold).
     static let minimumTextContrast = ColorContrast.minimumTextContrast
     static let minimumDimContrast = ColorContrast.minimumDimContrast
 
@@ -190,9 +191,9 @@ struct LyricAppearance: Codable, Equatable {
     /// 2. **The background is verbatim.** It is never darkened or lightened:
     ///    that was why the pill looked nothing like the artwork. The old
     ///    `autoDarkenLightBackgrounds` switch is retired.
-    /// 3. **易读** nudges only the lyric colour toward the readable extreme
-    ///    (smallest change reaching 4.5:1, hue preserved) and keeps the
-    ///    unsung half above 3:1. **保真** shows both colours untouched.
+    /// 3. **易读** nudges only the lyric colour toward black or white —
+    ///    whichever needs the smaller change to reach 3:1 — and keeps the
+    ///    unsung half above 2.5:1. **保真** shows both colours untouched.
     /// 4. Manual mode — and the wait for a colour to arrive — keeps the
     ///    user's own pair exactly as chosen.
     func effective(backgroundHex: String?, textHex: String?) -> LyricAppearance {
