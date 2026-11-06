@@ -134,14 +134,11 @@ struct SettingsView: View {
                 SettingsRow("来源") {
                     // A SwiftUI Picker bound straight to a nested @Published
                     // field writes its selection back while the view is being
-                    // redrawn. The pill repaints on every lyric line, so the
-                    // source kept flickering to 手动 and back — the floating
-                    // window then showed the last manual preset colour for a
-                    // moment, which looked like a colour-extraction failure.
-                    // Plain buttons write exactly once, only on a real click.
+                    // redrawn. Plain buttons write exactly once, only on a
+                    // real click.
                     HStack(spacing: 0) {
-                        colourModeButton("专辑配色", mode: "album")
-                        colourModeButton("封面取色", mode: "artwork")
+                        colourModeButton("Apple 配色", mode: "album")
+                        colourModeButton("封面主色", mode: "artwork")
                         colourModeButton("手动", mode: "manual")
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -149,16 +146,23 @@ struct SettingsView: View {
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .stroke(Color.secondary.opacity(0.35), lineWidth: 1)
                     )
-                    .frame(maxWidth: 240)
+                    .frame(maxWidth: 260)
                 }
 
+                Text("Apple 配色用 Apple 为歌词卡片配好的底色；封面主色从封面图提取。两种来源的歌词色都按对比度自动选，保证可读。")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 if state.appearance.colorModeRaw != "manual" {
-                    SettingsRow("封面过亮时自动压暗(保证可读)") {
+                    SettingsRow("封面过亮时自动压暗") {
                         Toggle("", isOn: $state.appearance.autoDarkenLightBackgrounds)
                             .labelsHidden()
                     }
                 }
             }
+
+            currentColorSection
 
             // Nothing below applies unless the user explicitly chose 手动 —
             // showing manual swatches while album/artwork colours are active
@@ -220,6 +224,61 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    /// Live palette and contrast, at body size on the same line as each
+    /// label. Making the numbers visible is what tells the two sources apart:
+    /// Apple's card background and the cover's dominant colour really are
+    /// different colours, not a failed lookup.
+    private var currentColorSection: some View {
+        let ap = state.effectiveAppearance
+        let bg = Color(hex: ap.backgroundColorHex) ?? .gray
+        let fg = Color(hex: ap.textColorHex) ?? .white
+        let ratio = Color.contrast(fg, bg)
+        return SettingsSection("当前配色") {
+            SettingsRow("来源") {
+                Text(currentSourceLabel).font(.body)
+            }
+            SettingsRow("底色") {
+                HStack(spacing: 8) {
+                    colorSwatch(ap.backgroundColorHex)
+                    Text(ap.backgroundColorHex).font(.body)
+                }
+            }
+            SettingsRow("歌词色") {
+                HStack(spacing: 8) {
+                    colorSwatch(ap.textColorHex)
+                    Text(ap.textColorHex).font(.body)
+                }
+            }
+            SettingsRow("对比度") {
+                Text(String(format: "%.1f:1 · 未唱 %d%%", ratio,
+                            Int((ap.dimOpacity * 100).rounded()))).font(.body)
+            }
+        }
+    }
+
+    private var currentSourceLabel: String {
+        switch state.appearance.colorModeRaw {
+        case "manual":
+            return "手动配色"
+        case "artwork":
+            return state.autoBackgroundHex == nil
+                ? "暂用手动配色(等待封面)" : "封面主色"
+        default:
+            return state.autoBackgroundHex == nil
+                ? "暂用手动配色(等待 Apple 配色)" : "Apple 配色"
+        }
+    }
+
+    private func colorSwatch(_ hex: String) -> some View {
+        RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(Color(hex: hex) ?? .gray)
+            .frame(width: 16, height: 16)
+            .overlay(
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .stroke(Color.secondary.opacity(0.45), lineWidth: 0.5)
+            )
     }
 
     private func presetHalf(background: String, foreground: String) -> some View {
@@ -592,7 +651,17 @@ private struct PreviewPill: View {
             Text("父亲写的散文诗")
                 .font(ap.font(size: min(ap.fontSize, 20)))
                 .lineLimit(1)
-                .foregroundColor(ap.textColor)
+                // Both halves exactly as the real pill draws them, so the
+                // preview exposes an unreadable dim colour instead of hiding
+                // it behind a fully opaque sample line.
+                .foregroundStyle(
+                    LinearGradient(stops: [
+                        .init(color: ap.highlightColor, location: 0),
+                        .init(color: ap.highlightColor, location: 0.45),
+                        .init(color: ap.textColor.opacity(ap.dimOpacity), location: 0.46),
+                        .init(color: ap.textColor.opacity(ap.dimOpacity), location: 1)
+                    ], startPoint: .leading, endPoint: .trailing)
+                )
             if ap.showNextLine {
                 Text("预告的下一句歌词")
                     .font(ap.font(size: min(ap.fontSize, 20) * ap.nextLineScale))

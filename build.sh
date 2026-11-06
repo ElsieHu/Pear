@@ -114,6 +114,22 @@ else
     exit 1
 fi
 
+echo "==> 自检配色对比度规则"
+VERIFY_CONTRAST_BIN="$BUILD_DIR/verify_contrast"
+VERIFY_CONTRAST_LOG="$BUILD_DIR/verify_contrast_build.log"
+if swiftc -O "$PROJECT_DIR/Sources/PearApp/ColorContrast.swift" \
+        "$PROJECT_DIR/tools/verify_contrast.swift" \
+        -o "$VERIFY_CONTRAST_BIN" >"$VERIFY_CONTRAST_LOG" 2>&1; then
+    if ! "$VERIFY_CONTRAST_BIN"; then
+        echo "    ! 配色对比度自检未通过，已中止构建"
+        exit 1
+    fi
+else
+    echo "    ! 配色对比度自检程序编译失败："
+    tail -5 "$VERIFY_CONTRAST_LOG"
+    exit 1
+fi
+
 echo "==> 生成图标"
 ICONSET="$BUILD_DIR/AppIcon.iconset"
 rm -rf "$ICONSET"

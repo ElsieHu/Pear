@@ -5,11 +5,15 @@ import CoreGraphics
 
 /// Downloads album artwork from Apple's CDN and extracts a dominant colour.
 ///
-/// Failure is a first-class outcome here: no URL, HTTP error, undecodable
-/// bytes, and flat / monochrome / very dark / very bright covers all leave
-/// `dominantHex` nil but log the reason and clear the "already requested"
-/// marker so the same track can be retried. `AppState` then walks an explicit
-/// fallback chain, so a usable colour is always produced.
+/// The returned hex is the cover's colour **verbatim**. Readability is handled
+/// downstream by `LyricAppearance.effective()` (text colour + a contrast-based
+/// dim floor), not by changing the background here — an earlier version
+/// silently darkened light covers and brightened dark ones, which made the
+/// pill look nothing like the artwork and ignored the "auto darken" switch.
+///
+/// Failure is a first-class outcome: no URL, HTTP error, undecodable bytes,
+/// and flat / monochrome covers leave `dominantHex` nil but log the reason and
+/// clear the "already requested" marker so the same track can be retried.
 @MainActor
 final class ArtworkLoader: ObservableObject {
     static let shared = ArtworkLoader()
@@ -175,9 +179,7 @@ final class ArtworkLoader: ObservableObject {
         // "characteristic" colour. Flat monochrome, pure black, pure white or
         // very dark / very bright covers can filter out *every* pixel though,
         // so pass 2 relaxes the luminance gate and only skips transparency.
-        let hex = pick(raw, side, strict: true) ?? pick(raw, side, strict: false)
-        guard let hex else { return nil }
-        return Self.legible(hex)
+        return pick(raw, side, strict: true) ?? pick(raw, side, strict: false)
     }
 
     private static func pick(_ raw: [UInt8], _ side: Int, strict: Bool) -> String? {
@@ -197,21 +199,13 @@ final class ArtworkLoader: ObservableObject {
             entry.sat = max(entry.sat, sat)
             buckets[key] = entry
         }
+        // Area first, saturation second. The old (0.4 + sat) weight let a
+        // small vivid patch beat the colour covering most of the cover, so
+        // the pill could disagree with the artwork the eye actually sees.
         guard let best = buckets.values.max(by: { lhs, rhs in
-            (Double(lhs.count) * (0.4 + lhs.sat)) < (Double(rhs.count) * (0.4 + rhs.sat))
+            (Double(lhs.count) * (0.7 + 0.3 * lhs.sat)) < (Double(rhs.count) * (0.7 + 0.3 * rhs.sat))
         }), best.count > 0 else { return nil }
         let r = best.r / best.count, g = best.g / best.count, b = best.b / best.count
         return String(format: "#%02X%02X%02X", r, g, b)
-    }
-
-    /// A near-white or near-black dominant colour would make the pill
-    /// unreadable; nudge it into a usable luminance band.
-    private static func legible(_ hex: String) -> String {
-        guard let c = Color(hex: hex) else { return hex }
-        let ns = NSColor(c).usingColorSpace(.deviceRGB) ?? NSColor.gray
-        let lum = 0.2126 * ns.redComponent + 0.7152 * ns.greenComponent + 0.0722 * ns.blueComponent
-        if lum > 0.88 { return c.blended(with: .black, fraction: 0.45).hexString }
-        if lum < 0.07 { return c.blended(with: .white, fraction: 0.28).hexString }
-        return hex
     }
 }

@@ -84,7 +84,11 @@ struct KaraokeView: View {
                             progress: 0,
                             appearance: ap,
                             scale: ap.nextLineScale,
-                            opacity: ap.dimOpacity
+                            // sweepGradient already applies `dimOpacity` to
+                            // the unsung half. Multiplying the whole view by
+                            // it again dimmed the next line twice, which made
+                            // it disappear into the background.
+                            opacity: 1
                         )
                         .id(idx + 1)
                         .transition(Self.handOffTransition)

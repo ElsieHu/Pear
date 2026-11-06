@@ -255,17 +255,16 @@ final class AppState: ObservableObject {
         var bg: String?
         var fg: String?
         var source = ""
-        /// A colour from the *other* source is better than nothing to look at,
-        /// but it is not what the user asked for — keep retrying for the real
-        /// one instead of declaring victory and stopping the loop.
-        var exact = false
 
+        // One source, one answer. Borrowing the *other* source's colour while
+        // the requested one loads made the pill change colour a second after
+        // every track change ("取色结果不同"). The retry loop now wakes on the
+        // cache write itself, so that stand-in is no longer needed: until the
+        // chosen source lands, show the user's manual palette and keep trying.
         if mode == "artwork" {
-            if let d = dominant { bg = d; source = "封面取色"; exact = true }
-            else if let a = appleBG { bg = a; fg = appleFG; source = "Apple 配色暂代" }
+            if let d = dominant { bg = d; source = "封面取色" }
         } else { // "album" — Apple's own bgColor / textColor1 pairing
-            if let a = appleBG { bg = a; fg = appleFG; source = "Apple 配色"; exact = true }
-            else if let d = dominant { bg = d; source = "封面主色暂代" }
+            if let a = appleBG { bg = a; fg = appleFG; source = "Apple 配色" }
         }
 
         if bg == nil {
@@ -276,32 +275,28 @@ final class AppState: ObservableObject {
             clearAutoColours()   // → effective() uses the manual palette
             scheduleColourRetry()
 
-            let reason = "取色未成功: 暂用手动配色 mode=\(mode) 有封面=\(info != nil) 主色=\(dominant ?? "-") AppleBG=\(appleBG ?? "-") 最近失败=\(ArtworkLoader.shared.lastFailure ?? "-")"
+            // This is a normal wait, not a failure: the cover / cache is
+            // written a moment after the song starts and the watcher wakes
+            // the retry loop. A real download error has its own WARN.
+            let reason = "等待\(mode == "artwork" ? "封面主色" : "Apple 配色"): 暂用手动配色 有封面=\(info != nil) 主色=\(dominant ?? "-") AppleBG=\(appleBG ?? "-")"
             // Deduplicated: the retry loop may call this dozens of times, and
             // the reason usually does not change between attempts.
             if reason != lastColorLog {
                 lastColorLog = reason
-                AppLog.warn(reason)
+                AppLog.info(reason)
             }
             return
         }
 
-        if exact {
-            autoColourMissing = false
-            colourRetryAttempt = 0
-            nextColourRetryDate = .distantPast
-        } else {
-            // Still waiting for the requested source: show what we have (or
-            // the manual palette) but keep the retry loop alive.
-            autoColourMissing = true
-            scheduleColourRetry()
-        }
+        autoColourMissing = false
+        colourRetryAttempt = 0
+        nextColourRetryDate = .distantPast
         if autoBackgroundHex != bg || autoTextHex != fg {
             autoBackgroundHex = bg
             autoTextHex = fg
         }
 
-        let msg = "配色[\(mode)] 来源=\(source) bg=\(bg ?? "-") fg=\(fg ?? "自动")\(exact ? "" : " (继续重试)")"
+        let msg = "配色[\(mode)] 来源=\(source) bg=\(bg ?? "-") fg=\(fg ?? "自动")"
         guard msg != lastColorLog else { return }
         lastColorLog = msg
         AppLog.info(msg)
