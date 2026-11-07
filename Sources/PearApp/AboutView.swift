@@ -33,7 +33,7 @@ struct AboutView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
 
-            Text("在 Mac 桌面上显示一行跟着歌滚动的歌词。")
+            Text("🍐，Apple Music的桌面歌词伙伴")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
