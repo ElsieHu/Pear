@@ -736,7 +736,9 @@ private struct PreviewPill: View {
     var body: some View {
         let ap = state.effectiveAppearance
         VStack(spacing: 4) {
-            Text("父亲写的散文诗")
+            // One line covers 中文 / English / 日本語 / 한국어, so the sample
+            // still exercises every script when "显示下一句" is off.
+            Text("散文诗 Hello こんにちは 안녕하세요")
                 .font(ap.font(size: min(ap.fontSize, 20)))
                 .lineLimit(1)
                 // Both halves exactly as the real pill draws them, so the
@@ -751,7 +753,7 @@ private struct PreviewPill: View {
                     ], startPoint: .leading, endPoint: .trailing)
                 )
             if ap.showNextLine {
-                Text("预告的下一句歌词")
+                Text("再见 Bye さよなら 안녕")
                     .font(ap.font(size: min(ap.fontSize, 20) * ap.nextLineScale))
                     .lineLimit(1)
                     .foregroundColor(ap.textColor.opacity(ap.dimOpacity))
