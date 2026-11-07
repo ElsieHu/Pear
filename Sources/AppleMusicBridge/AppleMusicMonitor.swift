@@ -3,8 +3,9 @@ import Combine
 import AppKit
 
 /// AppleScript's `tell application "Music"` **launches** the app when it is
-/// not running. Pear polls once a second (or every three seconds while
-/// paused), so quitting Music while Pear is open made the next tick relaunch
+/// not running. Pear polls once a second in both playing and paused states
+/// (a pause now hides the pill, so it must be noticed promptly), so quitting
+/// Music while Pear is open made the next tick relaunch
 /// it — the app appeared impossible to quit. Check the process list before
 /// sending any script; only a running Music app may be queried.
 private enum MusicAppProcess {
@@ -212,6 +213,10 @@ public enum MusicScript {
 public final class AppleMusicMonitor: ObservableObject {
     @Published public private(set) var track: CurrentTrack?
     @Published public private(set) var isPlaying = false
+    /// Raw `player state` text from AppleScript. Unlike `isPlaying` (which is
+    /// true only for the literal "playing"), this lets the app distinguish an
+    /// explicit pause from a fast-forward, a rewind or a network stall.
+    @Published public private(set) var playerState = ""
 
     /// Identity key that changes whenever a *different* song starts.
     public var trackIdentity: String? {
@@ -281,6 +286,7 @@ public final class AppleMusicMonitor: ObservableObject {
                                   persistentID: s.persistentID))
         }
         setPlaying(playing)
+        setPlayerState(s.state)
 
         // Anchors are plain state (not @Published): updating them must not
         // trigger a redraw, otherwise every observing view re-renders 1×/s.
@@ -290,11 +296,19 @@ public final class AppleMusicMonitor: ObservableObject {
         anchorPosition = s.position
         anchorDate = s.capturedAt
 
-        let wanted = playing ? 1.0 : 3.0
+        // Pause now hides the pill and resume brings it back, so both states
+        // need the same 1 Hz cadence. The old 3 s paused interval could add
+        // three seconds before a pause was even noticed.
+        let wanted: TimeInterval = 1.0
         if abs(wanted - pollInterval) > 0.01 {
             pollInterval = wanted
             poller?.setInterval(wanted)
         }
+    }
+
+    private func setPlayerState(_ newValue: String) {
+        guard playerState != newValue else { return }
+        playerState = newValue
     }
 
     /// `@Published` fires on *every* assignment, even when the value is

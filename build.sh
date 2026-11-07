@@ -147,6 +147,22 @@ else
     exit 1
 fi
 
+echo "==> 自检暂停隐藏规则"
+VERIFY_PAUSE_BIN="$BUILD_DIR/verify_pause"
+VERIFY_PAUSE_LOG="$BUILD_DIR/verify_pause_build.log"
+if swiftc -O "$PROJECT_DIR/Sources/PearApp/PauseVisibility.swift" \
+        "$PROJECT_DIR/tools/verify_pause.swift" \
+        -o "$VERIFY_PAUSE_BIN" >"$VERIFY_PAUSE_LOG" 2>&1; then
+    if ! "$VERIFY_PAUSE_BIN"; then
+        echo "    ! 暂停隐藏自检未通过，已中止构建"
+        exit 1
+    fi
+else
+    echo "    ! 暂停隐藏自检程序编译失败："
+    tail -5 "$VERIFY_PAUSE_LOG"
+    exit 1
+fi
+
 echo "==> 生成图标"
 ICONSET="$BUILD_DIR/AppIcon.iconset"
 rm -rf "$ICONSET"

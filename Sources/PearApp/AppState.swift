@@ -9,8 +9,10 @@ import AppleMusicBridge
 ///
 /// The pill is *content*, not a status surface: when a song has no lyrics
 /// (still loading, waiting for Apple Music to write its cache, or Apple has
-/// no synced lyrics at all) it stays hidden. Those messages belong in the
-/// menu-bar panel / 状态 page, where they do not cover the desktop.
+/// no synced lyrics at all) it stays hidden. It also hides on an explicit
+/// pause (see `PauseVisibility`), but stays up while a stream is buffering.
+/// Those messages belong in the menu-bar panel / 状态 page, where they do
+/// not cover the desktop.
 enum PanelContent: Equatable {
     case hidden
     case lyrics
@@ -56,6 +58,12 @@ final class AppState: ObservableObject {
 
     /// User-controlled visibility (menu bar toggle).
     @Published var windowEnabled = true
+
+    /// True once an explicit pause has lasted past the grace window. Kept
+    /// separate from `windowEnabled` so the user's own toggle is never
+    /// rewritten by playback state.
+    @Published private(set) var pauseHidesPanel = false
+    private var pausedSince: Date?
 
     /// Opt-in: also try the official MusicKit web API (needs a Developer token).
     @Published var useMusicKitAPI = false {
@@ -385,6 +393,10 @@ final class AppState: ObservableObject {
 
     private func watchTrackChanges() async {
         while !Task.isCancelled {
+            // Playback state changes come through the monitor's own relay;
+            // this 0.25 s loop only ages the pause timer, so the pill hides
+            // after the grace window without spawning another timer.
+            updatePauseVisibility()
             let key = monitor.trackIdentity
 
             // nil == nil on the very first pass, so without this the initial
@@ -543,8 +555,34 @@ final class AppState: ObservableObject {
 
     // MARK: - Panel content
 
+    /// Age the pause timer. Only Music's *explicit* paused/stopped state
+    /// counts: a network stall leaves `player state` at "playing" with a
+    /// frozen position, so it never hides the pill. Recovery clears the
+    /// timer immediately — there is no grace period on the way back.
+    private func updatePauseVisibility(now: Date = Date()) {
+        let paused = monitor.track != nil
+            && PauseVisibility.isExplicitPause(monitor.playerState)
+        guard paused else {
+            pausedSince = nil
+            if pauseHidesPanel {
+                pauseHidesPanel = false
+                AppLog.info("恢复播放 → 浮窗显示 state=\(monitor.playerState)")
+            }
+            return
+        }
+        if pausedSince == nil { pausedSince = now }
+        if !pauseHidesPanel,
+           PauseVisibility.hides(pausedSince: pausedSince, now: now) {
+            pauseHidesPanel = true
+            AppLog.info("播放暂停 → 浮窗隐藏 state=\(monitor.playerState)")
+        }
+    }
+
     var panelContent: PanelContent {
         guard windowEnabled else { return .hidden }
+        // Explicit pause (after the grace window). A buffering song is still
+        // reported as "playing" by Music, so it stays visible.
+        guard !pauseHidesPanel else { return .hidden }
         // No track → stay out of the way (Music isn't playing / no permission).
         guard monitor.track != nil else { return .hidden }
         // No lyrics → stay out of the way as well. This covers the brief
