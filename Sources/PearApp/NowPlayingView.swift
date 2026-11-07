@@ -175,8 +175,7 @@ struct NowPlayingView: View {
             .keyboardShortcut(",", modifiers: .command)
 
             MenuRow(title: "关于 Pear") {
-                NSApp.activate(ignoringOtherApps: true)
-                NSApp.orderFrontStandardAboutPanel(nil)
+                NotificationCenter.default.post(name: .openAbout, object: nil)
             }
 
             Divider().padding(.vertical, 4)

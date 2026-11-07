@@ -12,4 +12,6 @@ extension Notification.Name {
     static let resetPanelPosition = Notification.Name("Pear.resetPanelPosition")
     /// Open the preferences window (posted from the menu-bar panel).
     static let openSettings = Notification.Name("Pear.openSettings")
+    /// Open Pear's own About window (posted from the menu-bar panel).
+    static let openAbout = Notification.Name("Pear.openAbout")
 }

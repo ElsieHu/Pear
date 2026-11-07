@@ -180,6 +180,9 @@ cp "$BIN" "$MACOS/PearApp"
 cp "$BUILD_DIR/AppIcon.icns" "$RESOURCES/AppIcon.icns"
 chmod +x "$MACOS/PearApp"
 
+# Keep the two version keys identical on purpose: macOS appends
+# CFBundleVersion in parentheses ("1.1.2 (2)") whenever they differ, and the
+# About window reads CFBundleShortVersionString only.
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -196,9 +199,9 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.1.0</string>
+    <string>1.1.2</string>
     <key>CFBundleVersion</key>
-    <string>2</string>
+    <string>1.1.2</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSPrincipalClass</key>

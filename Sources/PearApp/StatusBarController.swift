@@ -12,6 +12,7 @@ final class StatusBarController {
     private weak var panel: KaraokePanel?
     private var nowPlayingWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var aboutWindow: NSWindow?
     private var outsideMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
 
@@ -105,6 +106,12 @@ final class StatusBarController {
             Task { @MainActor in
                 self?.closeNowPlaying()
                 self?.openSettings()
+            }
+        }
+        NotificationCenter.default.addObserver(forName: .openAbout, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                self?.closeNowPlaying()
+                self?.openAbout()
             }
         }
     }
@@ -236,6 +243,34 @@ final class StatusBarController {
             settingsWindow = window
         }
         settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - About window
+
+    /// Replaces macOS' standard About panel, which cannot show an author or a
+    /// clickable link and hard-codes the "version (build)" format.
+    func openAbout() {
+        if aboutWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 340, height: 360),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "关于 Pear"
+            let hosting = NSHostingView(rootView: AboutView())
+            hosting.wantsLayer = true
+            hosting.layerContentsRedrawPolicy = .onSetNeedsDisplay
+            window.contentView = hosting
+            window.backgroundColor = .windowBackgroundColor
+            // Let SwiftUI choose the height; a hard-coded one clips the links.
+            window.setContentSize(NSSize(width: 340, height: max(hosting.fittingSize.height, 320)))
+            window.isReleasedWhenClosed = false
+            window.center()
+            aboutWindow = window
+        }
+        aboutWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 }
