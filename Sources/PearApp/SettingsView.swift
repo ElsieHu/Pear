@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Translation
 import LyricEngine
 import AppleMusicBridge
 
@@ -17,13 +18,16 @@ import AppleMusicBridge
 ///   shown at body size on the same line as their label.
 struct SettingsView: View {
     @ObservedObject private var state = AppState.shared
+    @ObservedObject private var translator = TranslationService.shared
     @State private var selectedTab: SettingsTab = .color
+    @State private var showsTranslationSetup = false
 
     private enum SettingsTab: String, CaseIterable, Identifiable {
         case color = "配色"
         case text = "文字"
         case shape = "外形"
         case behaviour = "行为"
+        case translation = "翻译"
         case menuBar = "菜单栏"
         case status = "状态"
         var id: String { rawValue }
@@ -102,6 +106,7 @@ struct SettingsView: View {
         case .text: textTab
         case .shape: shapeTab
         case .behaviour: behaviourTab
+        case .translation: translationTab
         case .menuBar: menuBarTab
         case .status: statusTab
         }
@@ -177,11 +182,6 @@ struct SettingsView: View {
                         colourModeButton("手动", mode: "manual")
                     })
                 }
-
-                Text("Apple 配色用 Apple 配好的两色，封面取色从封面提取两色。默认把两色中较暗的作为底色、较亮的作为歌词色；保真原样显示，易读只在字色看不清时微调。")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
 
                 if state.appearance.colorModeRaw != "manual" {
                     SettingsRow("底色") {
@@ -530,6 +530,80 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Translation
+
+    private var translationTab: some View {
+        SettingsPage {
+            SettingsSection("翻译") {
+                SettingsRow("显示译文") {
+                    Toggle("", isOn: $translator.settings.enabled)
+                        .labelsHidden()
+                        .disabled(!translator.isAvailable)
+                }
+
+                SettingsRow("目标语言") {
+                    Picker("", selection: $translator.settings.targetLanguage) {
+                        ForEach(TranslationSettings.targets, id: \.id) { target in
+                            Text(target.name).tag(target.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 180)
+                }
+
+                SettingsSlider(title: "译文字号",
+                               value: "\(Int(translator.settings.relativeSize * 100))%",
+                               binding: $translator.settings.relativeSize,
+                               range: 0.4...0.9, step: 0.02)
+
+                SettingsRow("同时显示下一句") {
+                    Toggle("", isOn: $translator.settings.keepNextLine)
+                        .labelsHidden()
+                }
+            }
+
+            SettingsSection("状态") {
+                SettingsRow("当前状态") {
+                    Text(translator.status).font(.body).foregroundStyle(.secondary)
+                }
+                SettingsRow("系统要求") {
+                    Text(translator.isAvailable ? "macOS 15 或更新" : "需要 macOS 15 或更新")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                }
+                SettingsRow("缓存") {
+                    Text(TranslationRules.formattedCacheSize(translator.cacheBytes))
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 12) {
+                    if #available(macOS 15.0, *) {
+                        // Only offer the system download flow when the model
+                        // really is missing; otherwise the popover would just
+                        // show a sample translation with nothing to install.
+                        if translator.needsModelSetup {
+                            Button("下载语言模型") { showsTranslationSetup = true }
+                                .font(.body)
+                                .translationPresentation(
+                                    isPresented: $showsTranslationSetup,
+                                    text: "Hello, how are you? こんにちは 안녕하세요")
+                                .onChange(of: showsTranslationSetup) { _, showing in
+                                    if !showing { translator.retry() }
+                                }
+                        }
+                        Button("重新翻译") { translator.retry() }
+                            .font(.body)
+                            .disabled(!translator.settings.enabled)
+                    }
+                    Button("清理缓存") { translator.clearCache() }
+                        .font(.body)
+                        .disabled(translator.cacheBytes == 0)
+                }
+            }
+        }
+        .onAppear { translator.refreshCacheSize() }
+    }
+
     // MARK: - Menu bar
 
     private var menuBarTab: some View {
@@ -732,9 +806,12 @@ private struct SettingsSlider: View {
 /// which previously had no visible effect in the preview at all.
 private struct PreviewPill: View {
     @ObservedObject private var state = AppState.shared
+    @ObservedObject private var translator = TranslationService.shared
 
     var body: some View {
         let ap = state.effectiveAppearance
+        let showNext = ap.showNextLine
+            && (!translator.settings.enabled || translator.settings.keepNextLine)
         VStack(spacing: 4) {
             // One line covers 中文 / English / 日本語 / 한국어, so the sample
             // still exercises every script when "显示下一句" is off.
@@ -752,7 +829,13 @@ private struct PreviewPill: View {
                         .init(color: ap.textColor.opacity(ap.dimOpacity), location: 1)
                     ], startPoint: .leading, endPoint: .trailing)
                 )
-            if ap.showNextLine {
+            if translator.settings.enabled {
+                Text("译文示例 Translation 訳文 번역문")
+                    .font(ap.font(size: min(ap.fontSize, 20) * translator.settings.relativeSize))
+                    .lineLimit(1)
+                    .foregroundColor(ap.textColor.opacity(max(ap.dimOpacity, 0.82)))
+            }
+            if showNext {
                 Text("再见 Bye さよなら 안녕")
                     .font(ap.font(size: min(ap.fontSize, 20) * ap.nextLineScale))
                     .lineLimit(1)

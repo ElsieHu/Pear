@@ -9,6 +9,7 @@ import LyricEngine
 /// opacity, corner radius, padding, alignment) is driven by `LyricAppearance`.
 struct KaraokeView: View {
     @EnvironmentObject private var state: AppState
+    @ObservedObject private var translator = TranslationService.shared
     @State private var hovering = false
 
     private var ap: LyricAppearance { state.effectiveAppearance }
@@ -58,6 +59,18 @@ struct KaraokeView: View {
                 let idx = lyrics.activeLineIndex(at: pos) ?? 0
                 let line = lyrics.lines[idx]
                 let progress = ap.sweepEnabled ? lyrics.lineProgress(line, at: pos) : 1
+                // The translator keeps one string per lyric line; an empty
+                // one means "already in the target language" or "not ready".
+                let translation: String = {
+                    guard translator.settings.enabled,
+                          idx < translator.translations.count else { return "" }
+                    return translator.translations[idx]
+                }()
+                // With translations on, the second line belongs to the
+                // translation. 显示下一句 can still opt into a third line.
+                let showNext = ap.showNextLine
+                    && (!translator.settings.enabled || translator.settings.keepNextLine)
+                    && idx + 1 < lyrics.lines.count
 
                 VStack(alignment: ap.horizontalAlignment, spacing: 6) {
                     // A ZStack, not the VStack this used to be. During the
@@ -78,7 +91,19 @@ struct KaraokeView: View {
                         .id(idx)
                         .transition(Self.handOffTransition)
                     }
-                    if ap.showNextLine, idx + 1 < lyrics.lines.count {
+                    if !translation.isEmpty {
+                        Text(translation)
+                            .font(ap.font(size: ap.fontSize * translator.settings.relativeSize))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .multilineTextAlignment(ap.swiftTextAlignment)
+                            // No sweep: Apple gives us one string per line,
+                            // not word timings for the translated text.
+                            .foregroundColor(ap.textColor.opacity(max(ap.dimOpacity, 0.82)))
+                            .id("tr-\(idx)")
+                            .transition(Self.handOffTransition)
+                    }
+                    if showNext {
                         KaraokeLine(
                             text: lyrics.lines[idx + 1].text,
                             progress: 0,

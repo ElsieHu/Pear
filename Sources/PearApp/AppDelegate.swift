@@ -5,9 +5,18 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBar: StatusBarController?
     private var karaokePanel: KaraokePanel?
+    /// `Any?` keeps this class available on macOS 13; the concrete helper
+    /// window is gated on the Translation framework (macOS 15+).
+    private var translationHost: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let state = AppState.shared
+
+        if #available(macOS 15.0, *) {
+            // Always present so `.translationTask` stays alive even while the
+            // lyrics panel is hidden. It is 2×2 and fully transparent.
+            translationHost = TranslationHostWindow()
+        }
 
         let panel = KaraokePanel(state: state)
         karaokePanel = panel

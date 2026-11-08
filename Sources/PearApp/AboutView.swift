@@ -12,9 +12,9 @@ import AppKit
 @MainActor
 struct AboutView: View {
     /// Single source of truth: build.sh writes CFBundleShortVersionString.
-    /// The fallback matches that value so a bare `swift run` still reads 1.1.2.
+    /// The fallback matches that value so a bare `swift run` still reads 1.2.0.
     private var version: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.2"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.2.0"
     }
 
     private let repositoryURL = "https://github.com/ElsieHu/Pear"

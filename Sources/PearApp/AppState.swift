@@ -27,7 +27,13 @@ final class AppState: ObservableObject {
     let monitor = AppleMusicMonitor()
     private let musicKitSource = AppleMusicLyricsSource()
 
-    @Published var lyrics: TimedLyrics?
+    @Published var lyrics: TimedLyrics? {
+        didSet {
+            // A new song starts a fresh whole-song translation batch. Failure
+            // anywhere in the translator leaves the original lines untouched.
+            TranslationService.shared.update(lines: lyrics?.lines.map(\.text) ?? [])
+        }
+    }
     @Published var isFetching = false
     @Published var lastError: String?
 
@@ -55,6 +61,7 @@ final class AppState: ObservableObject {
     private var currentArtwork: AppleMusicCacheLyricsSource.ArtworkInfo?
     private var artworkCancellable: AnyCancellable?
     private var monitorCancellable: AnyCancellable?
+    private var translationCancellable: AnyCancellable?
 
     /// User-controlled visibility (menu bar toggle).
     @Published var windowEnabled = true
@@ -142,6 +149,13 @@ final class AppState: ObservableObject {
         // this relay the menu panel's play/pause icon and track title only
         // refreshed by accident (whenever some unrelated @Published changed).
         monitorCancellable = monitor.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+
+        // The translator is its own ObservableObject. The pill observes
+        // AppState (and KaraokePanel re-measures on its objectWillChange), so
+        // relay those updates or a finished translation would never resize
+        // the window from one line to two.
+        translationCancellable = TranslationService.shared.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
 
         // Artwork arrives asynchronously; re-derive colours once it lands.

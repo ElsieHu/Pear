@@ -163,6 +163,22 @@ else
     exit 1
 fi
 
+echo "==> 自检翻译规则"
+VERIFY_TRANSLATION_BIN="$BUILD_DIR/verify_translation"
+VERIFY_TRANSLATION_LOG="$BUILD_DIR/verify_translation_build.log"
+if swiftc -O "$PROJECT_DIR/Sources/PearApp/TranslationSettings.swift" \
+        "$PROJECT_DIR/tools/verify_translation.swift" \
+        -o "$VERIFY_TRANSLATION_BIN" >"$VERIFY_TRANSLATION_LOG" 2>&1; then
+    if ! "$VERIFY_TRANSLATION_BIN"; then
+        echo "    ! 翻译规则自检未通过，已中止构建"
+        exit 1
+    fi
+else
+    echo "    ! 翻译规则自检程序编译失败："
+    tail -5 "$VERIFY_TRANSLATION_LOG"
+    exit 1
+fi
+
 echo "==> 生成图标"
 ICONSET="$BUILD_DIR/AppIcon.iconset"
 rm -rf "$ICONSET"
@@ -199,9 +215,9 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.1.2</string>
+    <string>1.2.0</string>
     <key>CFBundleVersion</key>
-    <string>1.1.2</string>
+    <string>1.2.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSPrincipalClass</key>
