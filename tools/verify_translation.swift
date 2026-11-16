@@ -109,6 +109,20 @@ struct VerifyTranslation {
         check(!TranslationRules.isCacheFile("0123456789abcde.json"), "键长度不对不清理")
         check(!TranslationRules.isCacheFile("../secret.json"), "路径穿越不清理")
 
+        // 10. A concrete source language is required by prepareTranslation().
+        check(TranslationRules.sourceLanguageTag(for: "こんにちは 世界 今日もいい天気ですね") == "ja-JP",
+              "假名歌词识别为日语")
+        check(TranslationRules.sourceLanguageTag(for: "사랑해요 안녕하세요 오늘도") == "ko-KR",
+              "谚文歌词识别为韩语")
+        check(TranslationRules.sourceLanguageTag(for: "Hello, how are you today? I am fine, thank you very much.") == "en-US",
+              "英文歌词识别为英语")
+        check(TranslationRules.sourceLanguageTag(for: "Bonjour tout le monde, comment ça va aujourd'hui?") == "fr-FR",
+              "法文歌词识别为法语")
+        check(TranslationRules.sourceLanguageTag(for: "Привет мир, как дела сегодня") == "ru-RU",
+              "俄文歌词识别为俄语")
+        check(TranslationRules.sourceLanguageTag(for: "") == "en-US", "空文本有兜底源语言")
+        check(TranslationRules.sourceLanguageTag(for: "♪") == "en-US", "纯符号有兜底源语言")
+
         print("翻译规则自检通过：\(passed) 项")
     }
 }

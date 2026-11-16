@@ -1,6 +1,10 @@
 import SwiftUI
 import AppKit
-import Translation
+// `prepareTranslation()` is @concurrent while `.translationTask`'s closure
+// inherits the main actor. The session never leaves that closure; the
+// preconcurrency import matches TranslationService.swift and lets Swift 6
+// hand it to the framework.
+@preconcurrency import Translation
 import LyricEngine
 import AppleMusicBridge
 
@@ -20,7 +24,6 @@ struct SettingsView: View {
     @ObservedObject private var state = AppState.shared
     @ObservedObject private var translator = TranslationService.shared
     @State private var selectedTab: SettingsTab = .color
-    @State private var showsTranslationSetup = false
 
     private enum SettingsTab: String, CaseIterable, Identifiable {
         case color = "配色"
@@ -47,6 +50,17 @@ struct SettingsView: View {
         // StatusBarController.openSettings(); a narrower window clips the
         // pinned preview horizontally.
         .frame(width: 500, height: 600)
+        // Apple's download-permission sheet must attach to a window the user
+        // can see. This 1×1 invisible view stays in the settings window for
+        // the whole session and owns the prepareTranslation() task.
+        .overlay(alignment: .bottomTrailing) {
+            if #available(macOS 15.0, *), translator.prepareVersion > 0 {
+                TranslationModelPreparer(service: translator)
+                    .id(translator.prepareVersion)
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 
     // MARK: - Pinned preview
@@ -578,18 +592,10 @@ struct SettingsView: View {
                 }
                 HStack(spacing: 12) {
                     if #available(macOS 15.0, *) {
-                        // Only offer the system download flow when the model
-                        // really is missing; otherwise the popover would just
-                        // show a sample translation with nothing to install.
                         if translator.needsModelSetup {
-                            Button("下载语言模型") { showsTranslationSetup = true }
+                            Button("下载语言模型") { translator.requestModelDownload() }
                                 .font(.body)
-                                .translationPresentation(
-                                    isPresented: $showsTranslationSetup,
-                                    text: "Hello, how are you? こんにちは 안녕하세요")
-                                .onChange(of: showsTranslationSetup) { _, showing in
-                                    if !showing { translator.retry() }
-                                }
+                                .disabled(translator.isRequestingDownload)
                         }
                         Button("重新翻译") { translator.retry() }
                             .font(.body)
@@ -798,6 +804,37 @@ private struct SettingsSlider: View {
             }
             .labelsHidden()
         }
+    }
+}
+
+/// Hosts the one `TranslationSession` used to request a model download.
+///
+/// `.translationTask` only exists on a SwiftUI view, and `prepareTranslation()`
+/// is the only API that asks macOS to download the missing languages. Keeping
+/// this view inside the *visible* settings window is what lets Apple's
+/// permission sheet appear where it can be clicked; the 2×2 helper window
+/// would swallow it.
+@available(macOS 15.0, *)
+private struct TranslationModelPreparer: View {
+    @ObservedObject var service: TranslationService
+    @State private var configuration: TranslationSession.Configuration?
+
+    var body: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .translationTask(configuration) { session in
+                do {
+                    try await session.prepareTranslation()
+                    service.modelPreparationFinished(error: nil)
+                } catch {
+                    service.modelPreparationFinished(error: error.localizedDescription)
+                }
+            }
+            .onAppear {
+                configuration = TranslationSession.Configuration(
+                    source: Locale.Language(identifier: service.modelSourceHint),
+                    target: Locale.Language(identifier: service.settings.targetLanguage))
+            }
     }
 }
 

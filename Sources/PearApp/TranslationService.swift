@@ -58,11 +58,18 @@ final class TranslationService: ObservableObject {
     /// task is exactly what we want when the track changes mid-translation.
     @Published private(set) var jobVersion = 0
     /// Set when the system needs its translation models downloaded. The
-    /// settings page offers a visible button that triggers Apple's own
-    /// download UI — a hidden helper window would swallow that sheet.
+    /// settings page offers a button that owns a `.translationTask` in the
+    /// visible window and calls `prepareTranslation()` there.
     @Published private(set) var needsModelSetup = false
     /// Bytes currently occupied by on-disk translations (设置 ▸ 翻译 ▸ 缓存).
     @Published private(set) var cacheBytes: Int64 = 0
+    /// Bumped by 下载语言模型. The settings window uses it as the identity of
+    /// its download-session view, so each press gets a fresh session.
+    @Published private(set) var prepareVersion = 0
+    /// Explicit source language for the download request. Apple's
+    /// `prepareTranslation()` refuses a session whose source is `nil`.
+    @Published private(set) var modelSourceHint = "en-US"
+    @Published private(set) var isRequestingDownload = false
 
     var isAvailable: Bool {
         if #available(macOS 15.0, *) { return true }
@@ -76,7 +83,9 @@ final class TranslationService: ObservableObject {
     /// Guards against a slow model-status query for a song that has already
     /// been switched away from.
     private var modelGeneration = 0
-    private var waitingForModel = false
+    /// Every new poll supersedes the previous one, so 重新翻译 / 下载语言模型
+    /// never leaves an orphaned loop waiting on a stale key.
+    private var pollGeneration = 0
 
     private init() {
         let ud = UserDefaults.standard
@@ -159,6 +168,7 @@ final class TranslationService: ObservableObject {
         modelGeneration += 1
         let generation = modelGeneration
         let sample = lines[indices[0]]
+        let sourceSample = indices.prefix(12).map { lines[$0] }.joined(separator: "\n")
         Task { @MainActor [weak self] in
             guard let self else { return }
             let state = await Self.modelState(for: sample, target: target)
@@ -170,9 +180,10 @@ final class TranslationService: ObservableObject {
             case .needsDownload:
                 self.isWorking = false
                 self.needsModelSetup = true
+                self.modelSourceHint = TranslationRules.sourceLanguageTag(for: sourceSample)
                 self.status = "需要下载语言模型"
                 self.notifyChange()
-                AppLog.info("翻译等待系统语言模型 目标=\(target)")
+                AppLog.info("翻译等待系统语言模型 源=\(self.modelSourceHint) 目标=\(target)")
                 self.waitForModel(sample: sample, target: target, key: key)
             case .unsupported:
                 self.isWorking = false
@@ -221,26 +232,62 @@ final class TranslationService: ObservableObject {
         }
     }
 
-    /// After the user opens Apple's translation popover once, the model
-    /// downloads in the background. Pick the translation up automatically
-    /// instead of making them guess when to press 重新翻译.
+    /// Once the user allows the system download, models arrive in the
+    /// background. Keep checking and pick the translation up automatically.
     private func waitForModel(sample: String, target: String, key: String) {
-        guard !waitingForModel else { return }
-        waitingForModel = true
+        pollGeneration += 1
+        let generation = pollGeneration
         Task { @MainActor [weak self] in
-            defer { self?.waitingForModel = false }
-            for _ in 0..<40 {
+            for _ in 0..<80 {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
-                guard let self, self.currentKey == key, self.needsModelSetup else { return }
+                guard let self,
+                      self.pollGeneration == generation,
+                      self.currentKey == key,
+                      self.needsModelSetup else { return }
                 let state = await Self.modelState(for: sample, target: target)
                 if state == .installed {
                     AppLog.info("语言模型已就绪，自动继续翻译")
-                    self.status = "语言模型就绪，开始翻译"
+                    self.pollGeneration += 1
                     self.retry()
                     return
                 }
             }
         }
+    }
+
+    /// 下载语言模型: hand the missing language pair to Apple's
+    /// `prepareTranslation()`. The session lives in a view owned by the
+    /// visible settings window, so the system permission sheet cannot be
+    /// swallowed by the hidden 2×2 helper window.
+    func requestModelDownload() {
+        guard !isRequestingDownload, needsModelSetup, isAvailable else { return }
+        let target = settings.targetLanguage
+        let indices = TranslationRules.translatableIndices(lines: currentLines, target: target)
+        let sample = indices.prefix(12).map { currentLines[$0] }.joined(separator: "\n")
+        modelSourceHint = TranslationRules.sourceLanguageTag(for: sample)
+        isRequestingDownload = true
+        status = "正在申请下载语言模型"
+        prepareVersion += 1
+        AppLog.info("申请下载语言模型 源=\(modelSourceHint) 目标=\(target)")
+        notifyChange()
+    }
+
+    /// Called by the settings window's download session when
+    /// `prepareTranslation()` returns (or fails).
+    func modelPreparationFinished(error: String?) {
+        isRequestingDownload = false
+        if let error {
+            status = "下载请求失败 · \(error)"
+            AppLog.warn("语言模型下载请求失败: \(error)")
+            notifyChange()
+            return
+        }
+        AppLog.info("语言模型下载请求已提交 源=\(modelSourceHint) 目标=\(settings.targetLanguage)")
+        status = "系统正在下载语言模型"
+        notifyChange()
+        // Re-check right away; if the models are installed the translation
+        // starts, otherwise waitForModel keeps polling the download.
+        retry()
     }
 
     /// Force the current song through the translator again (settings page).

@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 
 /// Persisted translation preferences.
 ///
@@ -200,5 +201,40 @@ enum TranslationRules {
         let kb = Double(bytes) / 1024
         if kb < 1024 { return String(format: "%.0f KB", kb) }
         return String(format: "%.1f MB", kb / 1024)
+    }
+
+    /// Concrete BCP-47 tag for the language of the lines that need translating.
+    ///
+    /// `TranslationSession.prepareTranslation()` throws
+    /// `unableToIdentifyLanguage` unless its session has an explicit source
+    /// language, so the download button cannot pass `nil`. Kana and Hangul
+    /// are unambiguous and win outright; Apple's recognizer separates the
+    /// Latin-script languages (en/fr/de/es/…), and script counting is the
+    /// fallback because very short lyric lines can fool the recognizer.
+    static func sourceLanguageTag(for text: String) -> String {
+        let counts = scriptCounts(text)
+        if (counts[.kana] ?? 0) > 0 { return "ja-JP" }
+        if (counts[.hangul] ?? 0) > 0 { return "ko-KR" }
+
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        if let raw = recognizer.dominantLanguage?.rawValue, !raw.isEmpty {
+            let code = String(raw.split(separator: "-").first ?? "")
+            if let match = TranslationSettings.targets.first(where: {
+                $0.id == raw || (!code.isEmpty && $0.id.hasPrefix(code + "-"))
+            }) {
+                return match.id
+            }
+            return raw
+        }
+
+        switch dominantScript(text) {
+        case .han: return "zh-Hans"
+        case .cyrillic: return "ru-RU"
+        case .thai: return "th-TH"
+        case .arabic: return "ar-AE"
+        case .devanagari: return "hi-IN"
+        default: return "en-US"
+        }
     }
 }
