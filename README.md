@@ -11,7 +11,7 @@
 - **外文歌可以带译文**：打开「翻译」后，原句下方多一行小字译文，用 macOS 自带翻译在本机完成，不用账号、不联网、不填密钥。
 - **没歌、没歌词或暂停时自动消失**，不会弹「正在加载歌词」之类的提示框；网络缓冲时保持显示，退出「音乐」App 后浮窗也会收起，不会把「音乐」重新打开。
 
-**[→ 下载 Pear.app（约 951 KB）](https://github.com/ElsieHu/Pear/releases/download/v1.2.1/Pear-1.2.1.zip)**
+**[→ 下载 Pear.app（约 965 KB）](https://github.com/ElsieHu/Pear/releases/download/v1.2.2/Pear-1.2.2.zip)**
 
 ---
 
@@ -31,11 +31,11 @@
 
 ### 第 1 步 · 下载
 
-点上面的「下载 Pear.app」链接，或到 [Releases 页面](https://github.com/ElsieHu/Pear/releases/latest) 找 `Pear-1.2.1.zip`。浏览器会下载一个约 951 KB 的压缩包。
+点上面的「下载 Pear.app」链接，或到 [Releases 页面](https://github.com/ElsieHu/Pear/releases/latest) 找 `Pear-1.2.2.zip`。浏览器会下载一个约 965 KB 的压缩包。
 
 ### 第 2 步 · 放进「应用程序」
 
-1. 双击 `Pear-1.2.1.zip`，解压出 `Pear.app`。
+1. 双击 `Pear-1.2.2.zip`，解压出 `Pear.app`。
 2. 打开 Finder，按 `⇧⌘A` 打开「应用程序」文件夹。
 3. 把 `Pear.app` 拖进去。
 
