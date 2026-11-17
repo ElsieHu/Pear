@@ -1,16 +1,14 @@
 import Foundation
-import Darwin
 
 /// Owns the per-user LaunchAgent that starts Pear at login.
 ///
 /// The plist file is the single source of truth: `isEnabled` is simply whether
 /// the file exists, so the settings switch can never lie about the real state.
-/// `launchctl` registration is best-effort — from a non-GUI session it can
-/// fail with `Bootstrap failed: 5`, but the file still takes effect at the
-/// next login, which is why the UI says "变更将在下次登录生效".
+/// Registration is now purely a file operation — the OS loads the agent at
+/// the next login. Pear never starts another process from its own code.
 ///
 /// Deliberately no `WatchPaths`: watching the whole external volume used to
-/// re-run `open -a` on every file write, which could both activate the app
+/// re-run the launcher on every file write, which could both activate the app
 /// unexpectedly and resurrect an older copy of it. A login item should run
 /// at login, and only then.
 enum LaunchAgentManager {
@@ -53,6 +51,8 @@ enum LaunchAgentManager {
         """
     }
 
+    /// Writing / removing the plist is all that is needed. The change takes
+    /// effect at the next login; no helper tool is invoked from this process.
     static func setEnabled(_ enabled: Bool) {
         let fm = FileManager.default
         if enabled {
@@ -63,28 +63,8 @@ enum LaunchAgentManager {
             if (try? String(contentsOf: plistURL, encoding: .utf8)) != text {
                 try? text.write(to: plistURL, atomically: true, encoding: .utf8)
             }
-            register()
         } else {
-            unregister()
             try? fm.removeItem(at: plistURL)
         }
-    }
-
-    private static func register() {
-        runLaunchctl(["bootstrap", "gui/\(getuid())", plistURL.path])
-    }
-
-    private static func unregister() {
-        runLaunchctl(["bootout", "gui/\(getuid())/\(label)"])
-    }
-
-    private static func runLaunchctl(_ arguments: [String]) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = arguments
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try? process.run()
-        process.waitUntilExit()
     }
 }

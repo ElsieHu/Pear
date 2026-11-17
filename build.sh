@@ -40,6 +40,16 @@ if [ -n "$SDK_DIR" ] && [ "$SDK_DIR" != "default" ] && [ -d "$SDK_DIR" ]; then
     echo "==> 使用 SDK: $SDK_DIR (绕开 SwiftUIMacros 插件缺失)"
 fi
 
+echo "==> 检查禁止外部子进程"
+# Playback state must never be fetched by launching a command-line tool.
+# A source-level scan makes this a build-breaking invariant, not a convention.
+if grep -R -n -E '(/usr/bin/osascript|Process\(|NSTask|/bin/launchctl|child_process)' \
+        "$PROJECT_DIR/Sources" --include='*.swift'; then
+    echo "    ! 源码中仍存在外部命令 / 子进程调用，已中止构建"
+    exit 1
+fi
+echo "    源码中无外部子进程调用"
+
 echo "==> 编译 (release)"
 cd "$PROJECT_DIR"
 # Where SwiftPM keeps intermediates. Overridable because building on an
@@ -179,6 +189,22 @@ else
     exit 1
 fi
 
+echo "==> 自检播放状态时钟"
+VERIFY_CLOCK_BIN="$BUILD_DIR/verify_music_events"
+VERIFY_CLOCK_LOG="$BUILD_DIR/verify_music_events_build.log"
+if swiftc -O "$PROJECT_DIR/Sources/AppleMusicBridge/PlaybackClock.swift" \
+        "$PROJECT_DIR/tools/verify_music_events.swift" \
+        -o "$VERIFY_CLOCK_BIN" >"$VERIFY_CLOCK_LOG" 2>&1; then
+    if ! "$VERIFY_CLOCK_BIN"; then
+        echo "    ! 播放状态自检未通过，已中止构建"
+        exit 1
+    fi
+else
+    echo "    ! 播放状态自检程序编译失败："
+    tail -5 "$VERIFY_CLOCK_LOG"
+    exit 1
+fi
+
 echo "==> 生成图标"
 ICONSET="$BUILD_DIR/AppIcon.iconset"
 rm -rf "$ICONSET"
@@ -215,9 +241,9 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.2.1</string>
+    <string>1.2.2</string>
     <key>CFBundleVersion</key>
-    <string>1.2.1</string>
+    <string>1.2.2</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSPrincipalClass</key>

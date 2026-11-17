@@ -143,6 +143,9 @@ final class AppState: ObservableObject {
         MusicScript.diagnosticHandler = { message in
             AppLog.warn("AppleScript: \(message)")
         }
+        MusicScript.infoHandler = { message in
+            AppLog.info("播放状态: \(message)")
+        }
         monitor.start()
         // `monitor` is its own ObservableObject; views observe *this* object,
         // so its @Published changes would not reach them on their own. Without
