@@ -1,0 +1,56 @@
+{
+  "fill": {
+    "solid": "srgb:0.05490,0.05490,0.06275,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "pear-leaf.svg",
+          "name": "pear-leaf",
+          "fill": "automatic"
+        },
+        {
+          "image-name": "upper-left-gold.svg",
+          "name": "upper-left-gold",
+          "fill": "automatic"
+        },
+        {
+          "image-name": "upper-right-cream.svg",
+          "name": "upper-right-cream",
+          "fill": "automatic"
+        },
+        {
+          "image-name": "mid-left-coral.svg",
+          "name": "mid-left-coral",
+          "fill": "automatic"
+        },
+        {
+          "image-name": "mid-wave-crimson.svg",
+          "name": "mid-wave-crimson",
+          "fill": "automatic"
+        },
+        {
+          "image-name": "bottom-rose.svg",
+          "name": "bottom-rose",
+          "fill": "automatic"
+        }
+      ],
+      "name": "Pear Flowing Panes",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.35
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.0
+      }
+    }
+  ],
+  "supported-platforms": {
+    "circles": [
+      "watchOS"
+    ],
+    "squares": "shared"
+  }
+}

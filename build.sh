@@ -205,15 +205,15 @@ else
     exit 1
 fi
 
-echo "==> 生成图标"
-ICONSET="$BUILD_DIR/AppIcon.iconset"
-rm -rf "$ICONSET"
-if [ ! -f "$BUILD_DIR/make_icon" ] || [ "$PROJECT_DIR/tools/make_icon.swift" -nt "$BUILD_DIR/make_icon" ]; then
-    swiftc -O "$PROJECT_DIR/tools/make_icon.swift" -o "$BUILD_DIR/make_icon"
+echo "==> 准备图标"
+# The artwork is maintained as a real macOS icon document in assets/Pear.icon
+# and exported to assets/AppIcon.icns. Building must not regenerate it: the
+# previous generate-at-build-time script only shipped a simplified imitation.
+if [ ! -f "$PROJECT_DIR/assets/AppIcon.icns" ]; then
+    echo "    ! 缺少 assets/AppIcon.icns，无法构建"
+    exit 1
 fi
-"$BUILD_DIR/make_icon" "$ICONSET"
-rm -f "$APP_DIR/Contents/Resources/AppIcon.icns"
-iconutil -c icns "$ICONSET" -o "$BUILD_DIR/AppIcon.icns"
+cp "$PROJECT_DIR/assets/AppIcon.icns" "$BUILD_DIR/AppIcon.icns"
 
 echo "==> 组装 .app"
 rm -rf "$APP_DIR"
@@ -241,9 +241,9 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.2.2</string>
+    <string>1.2.3</string>
     <key>CFBundleVersion</key>
-    <string>1.2.2</string>
+    <string>1.2.3</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSPrincipalClass</key>
